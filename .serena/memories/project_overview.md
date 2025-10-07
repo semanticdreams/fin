@@ -1,0 +1,3 @@
+- Flutter mobile/web application living under `lib/` with `lib/main.dart` as entry point; tests in `test/`.
+- Uses Dart/Flutter SDK (>=3.9 per pubspec) with platform folders (`android/`, `ios/`, `web/`, etc.) managed by Flutter tooling.
+- Current README indicates boilerplate Flutter app; business logic not yet detailed.

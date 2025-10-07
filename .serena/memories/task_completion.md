@@ -1,0 +1,3 @@
+- Ensure `flutter analyze` and `flutter test` pass before finalizing changes.
+- For feature/UI updates, capture screenshots and note platform considerations for PRs.
+- Keep commit subjects terse imperative (`Verb scope`) under 60 chars and mention related issues (e.g., `Closes #123`).
