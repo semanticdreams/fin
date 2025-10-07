@@ -36,7 +36,7 @@ class AccountDatabase {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             balance REAL NOT NULL DEFAULT 0,
-            currency TEXT NOT NULL DEFAULT 'USD'
+            currency TEXT NOT NULL DEFAULT 'EUR'
           )
         ''');
       },
@@ -55,7 +55,7 @@ class AccountDatabase {
   Future<Account> createDefaultAccount() async {
     const defaultName = 'New Account';
     const defaultBalance = 0.0;
-    const defaultCurrency = 'USD';
+    const defaultCurrency = 'EUR';
 
     final db = await database;
     final newId = await db.insert(

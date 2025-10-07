@@ -273,7 +273,7 @@ class _AccountDialogState extends State<_AccountDialog> {
             controller: _currencyController,
             decoration: const InputDecoration(
               labelText: 'Currency',
-              hintText: 'USD',
+              hintText: 'EUR',
             ),
             textCapitalization: TextCapitalization.characters,
             maxLength: 8,
