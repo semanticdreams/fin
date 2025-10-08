@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Allow HTTP clients (http package, WebView) to access the network. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:label="fin"
         android:name="${applicationName}"
