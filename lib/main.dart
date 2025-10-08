@@ -328,10 +328,12 @@ class _AccountsTabState extends State<AccountsTab> {
             separatorBuilder: (_, __) => const Divider(height: 0),
             itemBuilder: (context, index) {
               final account = _controller.accounts[index];
+              final isCompact =
+                  MediaQuery.of(context).size.width < 480;
               return ListTile(
                 contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                 title: Text(account.name),
-                subtitle: Text(account.currency.toUpperCase()),
+                subtitle: _buildAccountSubtitle(account, isCompact: isCompact),
                 leading: CircleAvatar(
                   backgroundColor:
                       Theme.of(context).colorScheme.primaryContainer,
@@ -340,7 +342,7 @@ class _AccountsTabState extends State<AccountsTab> {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
-                trailing: _buildAccountTrailing(account),
+                trailing: _buildAccountTrailing(account, isCompact: isCompact),
                 onTap: () => _editAccount(account),
               );
             },
@@ -562,12 +564,43 @@ class _AccountsTabState extends State<AccountsTab> {
     }
   }
 
-  Widget _buildAccountTrailing(Account account) {
+  Widget _buildAccountSubtitle(Account account, {required bool isCompact}) {
+    if (!isCompact) {
+      return Text(account.currency.toUpperCase());
+    }
+
+    final currency = account.currency.toUpperCase();
+    final precision = suggestPrecision(currency);
+    final nativeAmount =
+        '${account.balance.toStringAsFixed(precision)} $currency';
+
+    final rates = _cachedRates;
+    String eurSummary;
+    if (rates == null) {
+      eurSummary = 'EUR value pending';
+    } else {
+      final eurValue = _convertToEur(account.balance, currency, rates);
+      eurSummary =
+          eurValue != null ? '€${eurValue.toStringAsFixed(2)}' : 'EUR rate unavailable';
+    }
+
+    return Text(
+      '$nativeAmount | $eurSummary',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
+  }
+
+  Widget _buildAccountTrailing(Account account, {required bool isCompact}) {
+    if (isCompact) {
+      return _buildAccountActions(account);
+    }
+
     final theme = Theme.of(context);
     final currency = account.currency.toUpperCase();
     final precision = suggestPrecision(currency);
     final nativeText =
-        '${account.balance.toStringAsFixed(precision)} ${account.currency}';
+        '${account.balance.toStringAsFixed(precision)} $currency';
 
     final rates = _cachedRates;
     Widget secondaryDisplay;
@@ -616,7 +649,16 @@ class _AccountsTabState extends State<AccountsTab> {
         ),
         const SizedBox(width: 10),
         secondary,
-        const SizedBox(width: 30),
+        const SizedBox(width: 16),
+        _buildAccountActions(account),
+      ],
+    );
+  }
+
+  Widget _buildAccountActions(Account account) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
         IconButton(
           icon: const Icon(Icons.history),
           tooltip: 'Account updates',
