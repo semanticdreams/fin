@@ -148,6 +148,10 @@ class _HomeScaffoldState extends State<HomeScaffold>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Image.asset('assets/icon.png'),
+        ),
         title: const Text('fin'),
         bottom: TabBar(
           controller: _tabController,
@@ -301,7 +305,7 @@ class _AccountsTabState extends State<AccountsTab> {
               final account = _controller.accounts[index];
               return ListTile(
                 contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
                 title: Text(account.name),
                 subtitle: Text(account.currency.toUpperCase()),
                 leading: CircleAvatar(
