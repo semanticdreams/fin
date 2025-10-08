@@ -6,6 +6,10 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'data/account.dart';
 import 'data/account_database.dart';
 import 'data/accounts_controller.dart';
+import 'data/currency_rates_service.dart';
+import 'data/stats_controller.dart';
+import 'data/transaction_record.dart';
+import 'data/transactions_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -34,6 +38,7 @@ class FinApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Personal Accounts',
+      debugShowCheckedModeBanner: false,
       themeMode: ThemeMode.system,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
@@ -46,24 +51,145 @@ class FinApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const AccountsPage(),
+      home: const HomeScaffold(),
     );
   }
 }
 
-class AccountsPage extends StatefulWidget {
-  const AccountsPage({super.key});
+class HomeScaffold extends StatefulWidget {
+  const HomeScaffold({super.key});
 
   @override
-  State<AccountsPage> createState() => _AccountsPageState();
+  State<HomeScaffold> createState() => _HomeScaffoldState();
 }
 
-class _AccountsPageState extends State<AccountsPage> {
-  late final AccountsController _controller;
+class _HomeScaffoldState extends State<HomeScaffold>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabController;
+  final GlobalKey<_TransactionsTabState> _transactionsTabKey =
+      GlobalKey<_TransactionsTabState>();
+  final GlobalKey<_AccountsTabState> _accountsTabKey =
+      GlobalKey<_AccountsTabState>();
+  final GlobalKey<_StatsTabState> _statsTabKey = GlobalKey<_StatsTabState>();
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 3, vsync: this);
+    _tabController.addListener(_handleTabChange);
+  }
+
+  @override
+  void dispose() {
+    _tabController.removeListener(_handleTabChange);
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  void _handleTabChange() {
+    if (mounted) {
+      setState(() {});
+    }
+    if (_tabController.index == 0) {
+      _transactionsTabKey.currentState?.refreshData();
+    } else if (_tabController.index == 2) {
+      _statsTabKey.currentState?.refreshData();
+    }
+  }
+
+  bool get _isAccountsTab => _tabController.index == 1;
+  bool get _isTransactionsTab => _tabController.index == 0;
+
+  Future<void> _refreshStats() async {
+    final state = _statsTabKey.currentState;
+    if (state != null) {
+      await state.refreshData();
+    }
+  }
+
+  void _handleAccountsChanged() {
+    _refreshStats();
+  }
+
+  Widget? _buildFab() {
+    if (_isTransactionsTab) {
+      return FloatingActionButton(
+        onPressed: () =>
+            _transactionsTabKey.currentState?.createTransaction(),
+        tooltip: 'Add transaction',
+        child: const Icon(Icons.playlist_add),
+      );
+    }
+    if (_isAccountsTab) {
+      return FloatingActionButton(
+        onPressed: () => _accountsTabKey.currentState?.createAccount(),
+        tooltip: 'Add account',
+        child: const Icon(Icons.add),
+      );
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Personal Accounts'),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const <Tab>[
+            Tab(
+              icon: Icon(Icons.receipt_long_outlined),
+              text: 'Transactions',
+            ),
+            Tab(
+              icon: Icon(Icons.account_balance_wallet_outlined),
+              text: 'Accounts',
+            ),
+            Tab(
+              icon: Icon(Icons.insights_outlined),
+              text: 'Stats',
+            ),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: <Widget>[
+          TransactionsTab(key: _transactionsTabKey),
+          AccountsTab(
+            key: _accountsTabKey,
+            onAccountsChanged: _handleAccountsChanged,
+          ),
+          StatsTab(key: _statsTabKey),
+        ],
+      ),
+      floatingActionButton: _buildFab(),
+    );
+  }
+}
+
+class AccountsTab extends StatefulWidget {
+  const AccountsTab({super.key, this.onAccountsChanged});
+
+  final VoidCallback? onAccountsChanged;
+
+  @override
+  State<AccountsTab> createState() => _AccountsTabState();
+}
+
+class _AccountsTabState extends State<AccountsTab> {
+  late final AccountsController _controller;
+  late final CurrencyRatesService _ratesService;
+  bool _isTotalLoading = true;
+  double? _totalEur;
+  String? _totalError;
+  int _calculationGeneration = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _ratesService = CurrencyRatesService();
     _controller = AccountsController(AccountDatabase.instance)
       ..addListener(_handleControllerChange);
     _controller.loadAccounts();
@@ -73,73 +199,260 @@ class _AccountsPageState extends State<AccountsPage> {
   void dispose() {
     _controller.removeListener(_handleControllerChange);
     _controller.dispose();
+    _ratesService.dispose();
     super.dispose();
   }
 
   void _handleControllerChange() {
-    if (mounted) {
-      setState(() {});
+    if (!mounted) {
+      return;
+    }
+    final isLoading = _controller.isLoading;
+    setState(() {
+      if (isLoading) {
+        _isTotalLoading = true;
+        _totalError = null;
+      }
+    });
+    if (!isLoading) {
+      _calculateTotal();
     }
   }
 
+  Future<void> createAccount() => _createAccount();
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Accounts'),
-      ),
-      body: _buildBody(),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _createAccount,
-        child: const Icon(Icons.add),
-      ),
-    );
+    return SafeArea(child: _buildBody());
   }
 
   Widget _buildBody() {
     if (_controller.isLoading && _controller.accounts.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    if (_controller.accounts.isEmpty) {
-      return const Center(
-        child: Text('No accounts yet. Tap + to create one.'),
+      return Column(
+        children: <Widget>[
+          const Expanded(
+            child: Center(child: CircularProgressIndicator()),
+          ),
+          const Divider(height: 1),
+          _buildTotalSummary(context),
+        ],
       );
     }
 
-    return ListView.separated(
-      padding: const EdgeInsets.only(bottom: 88),
-      itemCount: _controller.accounts.length,
-      separatorBuilder: (_, __) => const Divider(height: 0),
-      itemBuilder: (context, index) {
-        final account = _controller.accounts[index];
-        return ListTile(
-          title: Text(account.name),
-          subtitle: Text(account.currency),
-          leading: CircleAvatar(
-            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-            child: Text(
-              account.currency.substring(0, 1),
-              style: Theme.of(context).textTheme.titleMedium,
+    if (_controller.accounts.isEmpty) {
+      return Column(
+        children: <Widget>[
+          const Expanded(
+            child: Center(
+              child: Text('No accounts yet. Tap + to create one.'),
             ),
           ),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Text(
-                _formatBalance(account),
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              IconButton(
-                icon: const Icon(Icons.delete_outline),
-                tooltip: 'Delete account',
-                onPressed: () => _confirmDelete(account),
-              ),
-            ],
+          const Divider(height: 1),
+          _buildTotalSummary(context),
+        ],
+      );
+    }
+
+    return Column(
+      children: <Widget>[
+        Expanded(
+          child: ListView.separated(
+            padding: const EdgeInsets.only(bottom: 88),
+            itemCount: _controller.accounts.length,
+            separatorBuilder: (_, __) => const Divider(height: 0),
+            itemBuilder: (context, index) {
+              final account = _controller.accounts[index];
+              return ListTile(
+                title: Text(account.name),
+                subtitle: Text(account.currency),
+                leading: CircleAvatar(
+                  backgroundColor:
+                      Theme.of(context).colorScheme.primaryContainer,
+                  child: Text(
+                    account.currency.substring(0, 1),
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Text(
+                      _formatBalance(account),
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      tooltip: 'Delete account',
+                      onPressed: () => _confirmDelete(account),
+                    ),
+                  ],
+                ),
+                onTap: () => _editAccount(account),
+              );
+            },
           ),
-          onTap: () => _editAccount(account),
+        ),
+        const Divider(height: 1),
+        _buildTotalSummary(context),
+      ],
+    );
+  }
+
+  Future<void> _calculateTotal() async {
+    final accounts = List<Account>.from(_controller.accounts);
+    final int generation = ++_calculationGeneration;
+    debugPrint(
+      'AccountsTab: calculating EUR total for ${accounts.length} accounts '
+      '(generation $generation)',
+    );
+
+    if (accounts.isEmpty) {
+      if (!mounted || generation != _calculationGeneration) {
+        return;
+      }
+      setState(() {
+        _isTotalLoading = false;
+        _totalEur = 0;
+        _totalError = null;
+      });
+      debugPrint('AccountsTab: no accounts available, total defaults to 0.');
+      return;
+    }
+
+    setState(() {
+      _isTotalLoading = true;
+      _totalError = null;
+    });
+
+    try {
+      final rates = await _ratesService.fetchRates();
+      if (!mounted || generation != _calculationGeneration) {
+        return;
+      }
+
+      final missingCurrencies = <String>{};
+      var total = 0.0;
+
+      for (final Account account in accounts) {
+        final currency = account.currency.toUpperCase();
+        if (currency == 'EUR') {
+          total += account.balance;
+          continue;
+        }
+
+        final rate = rates[currency];
+        if (rate == null || rate == 0) {
+          missingCurrencies.add(currency);
+          debugPrint(
+            'AccountsTab: missing or zero rate for $currency, skipping in total.',
+          );
+          continue;
+        }
+
+        total += account.balance / rate;
+        debugPrint(
+          'AccountsTab: converted ${account.balance} $currency -> '
+          '${(account.balance / rate).toStringAsFixed(2)} EUR (rate $rate)',
         );
-      },
+      }
+
+      setState(() {
+        _isTotalLoading = false;
+        if (missingCurrencies.isNotEmpty) {
+          final missingList = missingCurrencies.toList()..sort();
+          _totalEur = null;
+          _totalError = 'Missing rates for ${missingList.join(', ')}.';
+        } else {
+          _totalEur = total;
+          _totalError = null;
+        }
+      });
+      if (missingCurrencies.isNotEmpty) {
+        debugPrint(
+          'AccountsTab: total unavailable due to missing currencies: '
+          '${missingCurrencies.join(', ')}',
+        );
+      } else {
+        debugPrint(
+          'AccountsTab: total calculation complete. EUR total = '
+          '${total.toStringAsFixed(2)}',
+        );
+      }
+    } catch (error, stackTrace) {
+      if (!mounted || generation != _calculationGeneration) {
+        return;
+      }
+      setState(() {
+        _isTotalLoading = false;
+        _totalEur = null;
+        _totalError = 'Could not refresh exchange rates.';
+      });
+      debugPrint(
+        'AccountsTab: error while refreshing exchange rates: $error\n'
+        '$stackTrace',
+      );
+    }
+  }
+
+  Widget _buildTotalSummary(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    Widget content;
+    if (_isTotalLoading) {
+      content = Row(
+        children: <Widget>[
+          SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Text('Calculating total...'),
+          ),
+        ],
+      );
+    } else if (_totalError != null) {
+      content = Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: <Widget>[
+          Icon(
+            Icons.error_outline,
+            color: colorScheme.error,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              _totalError!,
+              style:
+                  textTheme.bodyMedium?.copyWith(color: colorScheme.error),
+            ),
+          ),
+        ],
+      );
+    } else if (_totalEur != null) {
+      content = Text(
+        'Total: ${_totalEur!.toStringAsFixed(2)} EUR',
+        style: textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+      );
+    } else {
+      content = const Text('Total unavailable.');
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceVariant,
+        border: Border(
+          top: BorderSide(color: colorScheme.outlineVariant),
+        ),
+      ),
+      child: content,
     );
   }
 
@@ -151,6 +464,7 @@ class _AccountsPageState extends State<AccountsPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Account created with default values.')),
     );
+    widget.onAccountsChanged?.call();
   }
 
   Future<void> _editAccount(Account account) async {
@@ -169,6 +483,7 @@ class _AccountsPageState extends State<AccountsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Account updated.')),
       );
+      widget.onAccountsChanged?.call();
     }
   }
 
@@ -202,6 +517,7 @@ class _AccountsPageState extends State<AccountsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('${account.name} deleted.')),
       );
+      widget.onAccountsChanged?.call();
     }
   }
 
@@ -209,6 +525,721 @@ class _AccountsPageState extends State<AccountsPage> {
     final balance = account.balance.toStringAsFixed(2);
     return '$balance ${account.currency}';
   }
+}
+
+class TransactionsTab extends StatefulWidget {
+  const TransactionsTab({super.key});
+
+  @override
+  State<TransactionsTab> createState() => _TransactionsTabState();
+}
+
+class _TransactionsTabState extends State<TransactionsTab> {
+  late final TransactionsController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TransactionsController(AccountDatabase.instance)
+      ..addListener(_handleControllerChange);
+    _controller.load();
+  }
+
+  @override
+  void dispose() {
+    _controller
+      ..removeListener(_handleControllerChange)
+      ..dispose();
+    super.dispose();
+  }
+
+  void _handleControllerChange() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> refreshData() => _controller.load();
+
+  Future<void> createTransaction() async {
+    await refreshData();
+    if (_controller.accountsById.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Add an account before creating transactions.'),
+        ),
+      );
+      return;
+    }
+
+    final record = await showDialog<TransactionRecord>(
+      context: context,
+      builder: (context) => _TransactionDialog(
+        accounts: _controller.accounts,
+        mostRecent: _controller.mostRecentTransaction,
+        currencies: _currencyOptions(_controller.mostRecentTransaction),
+      ),
+    );
+    if (record != null) {
+      await _controller.addTransaction(record);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Transaction saved.')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(child: _buildBody());
+  }
+
+  Widget _buildBody() {
+    if (_controller.isLoading && _controller.transactions.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_controller.transactions.isEmpty) {
+      final hasAccounts = _controller.accountsById.isNotEmpty;
+      return Center(
+        child: Text(
+          hasAccounts
+              ? 'No transactions yet. Tap + to add one.'
+              : 'Add an account before creating transactions.',
+        ),
+      );
+    }
+
+    return ListView.separated(
+      padding: const EdgeInsets.only(bottom: 88),
+      itemCount: _controller.transactions.length,
+      separatorBuilder: (_, __) => const Divider(height: 0),
+      itemBuilder: (context, index) {
+        final transaction = _controller.transactions[index];
+        final account = _controller.accountsById[transaction.accountId];
+        final accountName = account?.name ?? 'Account ${transaction.accountId}';
+        return ListTile(
+          title: Text(transaction.title),
+          subtitle: Text('$accountName • ${_formatDate(transaction.createdAt)}'),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                '${transaction.amount.toStringAsFixed(2)} ${transaction.currency}',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline),
+                tooltip: 'Delete transaction',
+                onPressed: () => _confirmDelete(transaction),
+              ),
+            ],
+          ),
+          onTap: () => _editTransaction(transaction),
+        );
+      },
+    );
+  }
+
+  Future<void> _editTransaction(TransactionRecord transaction) async {
+    final updated = await showDialog<TransactionRecord>(
+      context: context,
+      builder: (context) => _TransactionDialog(
+        accounts: _controller.accounts,
+        transaction: transaction,
+        mostRecent: _controller.mostRecentTransaction,
+        currencies: _currencyOptions(transaction),
+      ),
+    );
+    if (updated != null) {
+      await _controller.updateTransaction(updated);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Transaction updated.')),
+      );
+    }
+  }
+
+  Future<void> _confirmDelete(TransactionRecord transaction) async {
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Delete transaction?'),
+          content: Text('This will remove "${transaction.title}".'),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldDelete == true) {
+      await _controller.deleteTransaction(transaction);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('"${transaction.title}" deleted.')),
+      );
+    }
+  }
+
+  String _formatDate(DateTime date) {
+    final twoDigits = (int value) => value.toString().padLeft(2, '0');
+    return '${date.year}-${twoDigits(date.month)}-${twoDigits(date.day)}';
+  }
+
+  List<String> _currencyOptions([TransactionRecord? seed]) {
+    final currencies = <String>{
+      for (final account in _controller.accounts)
+        account.currency.toUpperCase(),
+    };
+    final fromTransaction = seed ?? _controller.mostRecentTransaction;
+    if (fromTransaction != null) {
+      currencies.add(fromTransaction.currency.toUpperCase());
+    }
+    final options = currencies.toList()..sort();
+    if (options.isEmpty) {
+      options.add('EUR');
+    }
+    return options;
+  }
+}
+
+class StatsTab extends StatefulWidget {
+  const StatsTab({super.key});
+
+  @override
+  State<StatsTab> createState() => _StatsTabState();
+}
+
+class _StatsTabState extends State<StatsTab> {
+  late final StatsController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = StatsController(AccountDatabase.instance)
+      ..addListener(_handleControllerChange);
+    _controller.load();
+  }
+
+  @override
+  void dispose() {
+    _controller
+      ..removeListener(_handleControllerChange)
+      ..dispose();
+    super.dispose();
+  }
+
+  void _handleControllerChange() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> refreshData() async {
+    if (_controller.isLoading) {
+      return;
+    }
+    await _controller.load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(child: _buildBody());
+  }
+
+  Widget _buildBody() {
+    if (_controller.isLoading && _controller.points.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_controller.points.isEmpty) {
+      return const Center(child: Text('No balance history yet.'));
+    }
+
+    final points = _controller.points;
+    final latest = points.last;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: <Widget>[
+        Text(
+          'Total balance over time',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 16),
+        SizedBox(
+          height: 240,
+          child: _LineChart(
+            points: points,
+            lineColor: colorScheme.primary,
+            fillColor: colorScheme.primary.withOpacity(0.18),
+            axisColor: colorScheme.outlineVariant,
+          ),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          'Latest total: ${latest.total.toStringAsFixed(2)} EUR\nUpdated: ${_formatTimestamp(latest.time)}',
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+      ],
+    );
+  }
+
+  String _formatTimestamp(DateTime time) {
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${time.year}-${two(time.month)}-${two(time.day)} '
+        '${two(time.hour)}:${two(time.minute)}';
+  }
+}
+
+class _LineChart extends StatelessWidget {
+  const _LineChart({
+    required this.points,
+    required this.lineColor,
+    required this.fillColor,
+    required this.axisColor,
+  });
+
+  final List<StatsPoint> points;
+  final Color lineColor;
+  final Color fillColor;
+  final Color axisColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return CustomPaint(
+          size: Size(constraints.maxWidth, constraints.maxHeight),
+          painter: _LineChartPainter(
+            points: points,
+            lineColor: lineColor,
+            fillColor: fillColor,
+            axisColor: axisColor,
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _LineChartPainter extends CustomPainter {
+  _LineChartPainter({
+    required this.points,
+    required this.lineColor,
+    required this.fillColor,
+    required this.axisColor,
+  });
+
+  final List<StatsPoint> points;
+  final Color lineColor;
+  final Color fillColor;
+  final Color axisColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.isEmpty || size.width <= 0 || size.height <= 0) {
+      return;
+    }
+
+    final times = points
+        .map((point) => point.time.millisecondsSinceEpoch)
+        .toList(growable: false);
+    final values = points.map((point) => point.total).toList(growable: false);
+
+    int minTime = times.first;
+    int maxTime = times.first;
+    double minValue = values.first;
+    double maxValue = values.first;
+
+    for (final time in times) {
+      if (time < minTime) minTime = time;
+      if (time > maxTime) maxTime = time;
+    }
+    for (final value in values) {
+      if (value < minValue) minValue = value;
+      if (value > maxValue) maxValue = value;
+    }
+
+    double timeRange = (maxTime - minTime).abs().toDouble();
+    if (timeRange == 0) {
+      timeRange = 1;
+    }
+    double valueRange = (maxValue - minValue).abs();
+    if (valueRange < 0.0001) {
+      valueRange = 0.0001;
+    }
+
+    final path = Path();
+    final offsets = <Offset>[];
+
+    for (var i = 0; i < points.length; i++) {
+      double position =
+          (times[i] - minTime).toDouble() / timeRange;
+      if (position.isNaN) {
+        position = 0;
+      }
+      if (position < 0) {
+        position = 0;
+      } else if (position > 1) {
+        position = 1;
+      }
+      double valueRatio = (values[i] - minValue) / valueRange;
+      if (valueRatio.isNaN) {
+        valueRatio = 0;
+      }
+      if (valueRatio < 0) {
+        valueRatio = 0;
+      } else if (valueRatio > 1) {
+        valueRatio = 1;
+      }
+      final double dx = position * size.width;
+      final double dy = size.height - valueRatio * size.height;
+      final offset = Offset(dx, dy);
+      offsets.add(offset);
+      if (i == 0) {
+        path.moveTo(offset.dx, offset.dy);
+      } else {
+        path.lineTo(offset.dx, offset.dy);
+      }
+    }
+
+    final axisPaint = Paint()
+      ..color = axisColor
+      ..strokeWidth = 1
+      ..style = PaintingStyle.stroke;
+    canvas.drawLine(
+      Offset(0, size.height),
+      Offset(size.width, size.height),
+      axisPaint,
+    );
+
+    if (offsets.length > 1) {
+      final fillPath = Path.from(path)
+        ..lineTo(offsets.last.dx, size.height)
+        ..lineTo(offsets.first.dx, size.height)
+        ..close();
+
+      final fillPaint = Paint()
+        ..color = fillColor
+        ..style = PaintingStyle.fill;
+      canvas.drawPath(fillPath, fillPaint);
+    }
+
+    final linePaint = Paint()
+      ..color = lineColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    if (offsets.length > 1) {
+      canvas.drawPath(path, linePaint);
+    }
+
+    final pointPaint = Paint()
+      ..color = lineColor
+      ..style = PaintingStyle.fill;
+    for (final offset in offsets) {
+      canvas.drawCircle(offset, 3, pointPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _LineChartPainter oldDelegate) {
+    return oldDelegate.points != points ||
+        oldDelegate.lineColor != lineColor ||
+        oldDelegate.fillColor != fillColor ||
+        oldDelegate.axisColor != axisColor;
+  }
+}
+
+class _TransactionDialog extends StatefulWidget {
+  const _TransactionDialog({
+    required this.accounts,
+    required this.currencies,
+    this.transaction,
+    this.mostRecent,
+  });
+
+  final List<Account> accounts;
+  final List<String> currencies;
+  final TransactionRecord? transaction;
+  final TransactionRecord? mostRecent;
+
+  bool get isEditing => transaction != null;
+
+  @override
+  State<_TransactionDialog> createState() => _TransactionDialogState();
+}
+
+class _TransactionDialogState extends State<_TransactionDialog> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _amountController;
+  late final DateTime _createdAt;
+  String? _selectedCurrency;
+  int? _selectedAccountId;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final existing = widget.transaction;
+    Account? defaultAccount;
+    if (existing != null) {
+      defaultAccount = _findAccount(widget.accounts, existing.accountId);
+    } else if (widget.mostRecent != null) {
+      defaultAccount = _findAccount(widget.accounts, widget.mostRecent!.accountId);
+    }
+    defaultAccount ??=
+        widget.accounts.isNotEmpty ? widget.accounts.first : null;
+
+    _titleController = TextEditingController(text: existing?.title ?? '');
+    _amountController = TextEditingController(
+      text: existing != null ? existing.amount.toStringAsFixed(2) : '',
+    );
+    _selectedAccountId = existing?.accountId ?? defaultAccount?.id;
+    _selectedCurrency = _resolveInitialCurrency(
+      existing?.currency,
+      widget.mostRecent?.currency,
+      defaultAccount?.currency,
+    );
+    _createdAt = existing?.createdAt ?? DateTime.now();
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _amountController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = widget.isEditing ? 'Edit transaction' : 'Add transaction';
+
+    return AlertDialog(
+      title: Text(title),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            TextField(
+              controller: _titleController,
+              decoration: const InputDecoration(labelText: 'Title'),
+              textCapitalization: TextCapitalization.sentences,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _amountController,
+              decoration: const InputDecoration(
+                labelText: 'Amount',
+                hintText: '0.00',
+              ),
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              value: _selectedCurrency,
+              decoration: const InputDecoration(labelText: 'Currency'),
+              items: _buildCurrencyItems(),
+              onChanged: (value) {
+                if (value == null) {
+                  return;
+                }
+                setState(() {
+                  _selectedCurrency = value;
+                });
+              },
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<int>(
+              value: _selectedAccountId,
+              decoration: const InputDecoration(labelText: 'Account'),
+              items: _buildAccountItems(),
+              onChanged: (value) {
+                if (value == null) {
+                  return;
+                }
+                setState(() {
+                  _selectedAccountId = value;
+                  final account = _findAccountById(value);
+                  if (!widget.isEditing && account != null) {
+                    _selectedCurrency = account.currency.toUpperCase();
+                  }
+                });
+              },
+            ),
+            if (_error != null) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(_error!, style: const TextStyle(color: Colors.red)),
+            ],
+          ],
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: _submit,
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+
+  List<DropdownMenuItem<int>> _buildAccountItems() {
+    final items = widget.accounts
+        .where((account) => account.id != null)
+        .map(
+          (account) => DropdownMenuItem<int>(
+            value: account.id,
+            child: Text(account.name),
+          ),
+        )
+        .toList();
+
+    final selectedId = _selectedAccountId;
+    final hasSelection = selectedId == null
+        ? true
+        : items.any((item) => item.value == selectedId);
+    if (selectedId != null && !hasSelection) {
+      items.insert(
+        0,
+        DropdownMenuItem<int>(
+          value: selectedId,
+          child: Text('Account $selectedId (missing)'),
+        ),
+      );
+    }
+    return items;
+  }
+
+  Account? _findAccountById(int id) {
+    for (final account in widget.accounts) {
+      if (account.id == id) {
+        return account;
+      }
+    }
+    return null;
+  }
+
+  Account? _findAccount(List<Account> accounts, int? id) {
+    if (id == null) {
+      return null;
+    }
+    for (final account in accounts) {
+      if (account.id == id) {
+        return account;
+      }
+    }
+    return null;
+  }
+
+  List<DropdownMenuItem<String>> _buildCurrencyItems() {
+    final items = widget.currencies
+        .map(
+          (currency) => DropdownMenuItem<String>(
+            value: currency,
+            child: Text(currency),
+          ),
+        )
+        .toList();
+    final selected = _selectedCurrency;
+    if (selected != null && !items.any((item) => item.value == selected)) {
+      items.insert(
+        0,
+        DropdownMenuItem<String>(
+          value: selected,
+          child: Text('$selected (missing)'),
+        ),
+      );
+    }
+    return items;
+  }
+
+  String? _resolveInitialCurrency(
+    String? existing,
+    String? mostRecent,
+    String? accountCurrency,
+  ) {
+    final fallback = widget.currencies.isNotEmpty ? widget.currencies.first : null;
+    return (existing ?? mostRecent ?? accountCurrency ?? fallback ?? 'EUR')
+        .toUpperCase();
+  }
+
+  void _submit() {
+    final title = _titleController.text.trim();
+    if (title.isEmpty) {
+      _setError('Title cannot be empty.');
+      return;
+    }
+
+    final parsedAmount = double.tryParse(_amountController.text.trim());
+    if (parsedAmount == null) {
+      _setError('Amount must be a number.');
+      return;
+    }
+
+    final currency = _selectedCurrency;
+    if (currency == null || currency.isEmpty) {
+      _setError('Currency cannot be empty.');
+      return;
+    }
+
+    final accountId = _selectedAccountId;
+    if (accountId == null) {
+      _setError('Select an account.');
+      return;
+    }
+
+    final existing = widget.transaction;
+    final createdAt = _createdAt;
+
+    final result = existing?.copyWith(
+          title: title,
+          createdAt: createdAt,
+          amount: parsedAmount,
+          currency: currency,
+          accountId: accountId,
+        ) ??
+        TransactionRecord(
+          title: title,
+          createdAt: createdAt,
+          amount: parsedAmount,
+          currency: currency,
+          accountId: accountId,
+        );
+    Navigator.of(context).pop(result);
+  }
+
+  void _setError(String message) {
+    setState(() {
+      _error = message;
+    });
+  }
+
 }
 
 class _AccountDialog extends StatefulWidget {
@@ -230,10 +1261,10 @@ class _AccountDialogState extends State<_AccountDialog> {
   void initState() {
     super.initState();
     _nameController = TextEditingController(text: widget.account.name);
-    _balanceController =
-        TextEditingController(text: widget.account.balance.toStringAsFixed(2));
-    _currencyController =
-        TextEditingController(text: widget.account.currency);
+    _balanceController = TextEditingController(
+      text: widget.account.balance.toStringAsFixed(2),
+    );
+    _currencyController = TextEditingController(text: widget.account.currency);
   }
 
   @override
@@ -253,9 +1284,7 @@ class _AccountDialogState extends State<_AccountDialog> {
         children: <Widget>[
           TextField(
             controller: _nameController,
-            decoration: const InputDecoration(
-              labelText: 'Name',
-            ),
+            decoration: const InputDecoration(labelText: 'Name'),
             textCapitalization: TextCapitalization.sentences,
           ),
           const SizedBox(height: 12),
@@ -265,8 +1294,7 @@ class _AccountDialogState extends State<_AccountDialog> {
               labelText: 'Balance',
               hintText: '0.00',
             ),
-            keyboardType:
-                const TextInputType.numberWithOptions(decimal: true),
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
           ),
           const SizedBox(height: 12),
           TextField(
@@ -280,10 +1308,7 @@ class _AccountDialogState extends State<_AccountDialog> {
           ),
           if (_error != null) ...<Widget>[
             const SizedBox(height: 8),
-            Text(
-              _error!,
-              style: const TextStyle(color: Colors.red),
-            ),
+            Text(_error!, style: const TextStyle(color: Colors.red)),
           ],
         ],
       ),
@@ -292,10 +1317,7 @@ class _AccountDialogState extends State<_AccountDialog> {
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Cancel'),
         ),
-        TextButton(
-          onPressed: _submit,
-          child: const Text('Save'),
-        ),
+        TextButton(onPressed: _submit, child: const Text('Save')),
       ],
     );
   }
@@ -309,8 +1331,7 @@ class _AccountDialogState extends State<_AccountDialog> {
       return;
     }
 
-    final parsedBalance =
-        double.tryParse(_balanceController.text.trim());
+    final parsedBalance = double.tryParse(_balanceController.text.trim());
     if (parsedBalance == null) {
       setState(() {
         _error = 'Balance must be a number.';
