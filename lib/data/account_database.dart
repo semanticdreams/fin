@@ -183,21 +183,28 @@ class AccountDatabase {
     final db = await database;
     final accountId = record.accountId;
     final account = await _fetchAccount(db, accountId);
-    final rates = await _ratesService.fetchRates();
-    final converted = _convertAmountOrNull(
-      record.amount,
-      record.currency,
-      account.currency,
-      rates,
-    );
-    if (converted == null) {
-      debugPrint(
-        'AccountDatabase: unable to convert ${record.currency} -> '
-        '${account.currency}; skipping account update.',
+    final rates = await _safeFetchRates();
+    if (rates != null) {
+      final converted = _convertAmountOrNull(
+        record.amount,
+        record.currency,
+        account.currency,
+        rates,
       );
+      if (converted == null) {
+        debugPrint(
+          'AccountDatabase: unable to convert ${record.currency} -> '
+          '${account.currency}; skipping account update.',
+        );
+      } else {
+        final newBalance = account.balance + converted;
+        await _updateAccountBalance(db, account, newBalance);
+      }
     } else {
-      final newBalance = account.balance + converted;
-      await _updateAccountBalance(db, account, newBalance);
+      debugPrint(
+        'AccountDatabase: skipping balance adjustment for account '
+        '${account.id} due to missing exchange rates.',
+      );
     }
 
     final data = Map<String, Object?>.from(record.toMap())
@@ -222,9 +229,9 @@ class AccountDatabase {
       throw ArgumentError('Transaction with id $id does not exist.');
     }
     final existing = TransactionRecord.fromMap(existingRows.first);
-    final rates = await _ratesService.fetchRates();
+    final rates = await _safeFetchRates();
 
-    if (existing.accountId == record.accountId) {
+    if (existing.accountId == record.accountId && rates != null) {
       final account = await _fetchAccount(db, record.accountId);
       final oldConverted = _convertAmountOrNull(
         existing.amount,
@@ -250,7 +257,7 @@ class AccountDatabase {
           await _updateAccountBalance(db, account, newBalance);
         }
       }
-    } else {
+    } else if (existing.accountId != record.accountId && rates != null) {
       final oldAccount = await _fetchAccount(db, existing.accountId);
       final oldConverted = _convertAmountOrNull(
         existing.amount,
@@ -284,6 +291,11 @@ class AccountDatabase {
           '${newAccount.id}.',
         );
       }
+    } else if (rates == null) {
+      debugPrint(
+        'AccountDatabase: transaction update executed without exchange rates; '
+        'account balances unchanged.',
+      );
     }
 
     await db.update(
@@ -305,21 +317,28 @@ class AccountDatabase {
     );
     if (existingRows.isNotEmpty) {
       final existing = TransactionRecord.fromMap(existingRows.first);
-      final rates = await _ratesService.fetchRates();
-      final account = await _fetchAccount(db, existing.accountId);
-      final converted = _convertAmountOrNull(
-        existing.amount,
-        existing.currency,
-        account.currency,
-        rates,
-      );
-      if (converted != null) {
-        final newBalance = account.balance - converted;
-        await _updateAccountBalance(db, account, newBalance);
+      final rates = await _safeFetchRates();
+      if (rates != null) {
+        final account = await _fetchAccount(db, existing.accountId);
+        final converted = _convertAmountOrNull(
+          existing.amount,
+          existing.currency,
+          account.currency,
+          rates,
+        );
+        if (converted != null) {
+          final newBalance = account.balance - converted;
+          await _updateAccountBalance(db, account, newBalance);
+        } else {
+          debugPrint(
+            'AccountDatabase: missing rate when deleting transaction from '
+            'account ${account.id}.',
+          );
+        }
       } else {
         debugPrint(
-          'AccountDatabase: missing rate when deleting transaction from '
-          'account ${account.id}.',
+          'AccountDatabase: skipping balance rollback for transaction delete '
+          'due to missing exchange rates.',
         );
       }
     }
@@ -384,6 +403,15 @@ class AccountDatabase {
     );
   }
 
+  Future<Map<String, double>?> _safeFetchRates() async {
+    try {
+      return await _ratesService.fetchRates();
+    } catch (error, stackTrace) {
+      debugPrint('AccountDatabase: failed to fetch rates: $error\n$stackTrace');
+      return null;
+    }
+  }
+
   Future<Account> _fetchAccount(Database db, int accountId) async {
     final rows = await db.query(
       accountsTable,
@@ -424,8 +452,11 @@ class AccountDatabase {
     double amount,
     String fromCurrency,
     String toCurrency,
-    Map<String, double> rates,
+    Map<String, double>? rates,
   ) {
+    if (rates == null) {
+      return null;
+    }
     final from = fromCurrency.toUpperCase();
     final to = toCurrency.toUpperCase();
     if (from == to) {
