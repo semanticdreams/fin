@@ -5,6 +5,8 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'data/account.dart';
 import 'data/account_database.dart';
+import 'data/account_update.dart';
+import 'data/account_updates_controller.dart';
 import 'data/accounts_controller.dart';
 import 'data/currency_rates_service.dart';
 import 'data/stats_controller.dart';
@@ -240,6 +242,22 @@ class _AccountsTabState extends State<AccountsTab> {
     await _controller.loadAccounts();
   }
 
+  void _openAccountUpdates(Account account) {
+    final id = account.id;
+    if (id == null) {
+      return;
+    }
+    Navigator.of(context)
+        .push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => AccountUpdatesPage(account: account),
+      ),
+    ).then((_) {
+      refreshAccounts();
+      widget.onAccountsChanged?.call();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return SafeArea(child: _buildBody());
@@ -285,6 +303,7 @@ class _AccountsTabState extends State<AccountsTab> {
                 contentPadding:
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 title: Text(account.name),
+                subtitle: Text(account.currency.toUpperCase()),
                 leading: CircleAvatar(
                   backgroundColor:
                       Theme.of(context).colorScheme.primaryContainer,
@@ -515,13 +534,6 @@ class _AccountsTabState extends State<AccountsTab> {
     }
   }
 
-  String _formatBalance(Account account) {
-    final currency = account.currency.toUpperCase();
-    final precision = suggestPrecision(currency);
-    final balance = account.balance.toStringAsFixed(precision);
-    return '$balance ${account.currency}';
-  }
-
   Widget _buildAccountTrailing(Account account) {
     final theme = Theme.of(context);
     final currency = account.currency.toUpperCase();
@@ -530,16 +542,16 @@ class _AccountsTabState extends State<AccountsTab> {
         '${account.balance.toStringAsFixed(precision)} ${account.currency}';
 
     final rates = _cachedRates;
-    Widget secondary;
+    Widget secondaryDisplay;
     if (rates != null) {
       final eurValue = _convertToEur(account.balance, currency, rates);
       if (eurValue != null) {
-        secondary = Text(
+        secondaryDisplay = Text(
           '€${eurValue.toStringAsFixed(2)}',
           style: theme.textTheme.titleMedium,
         );
       } else {
-        secondary = Tooltip(
+        secondaryDisplay = Tooltip(
           message: 'Missing exchange rate for $currency',
           child: Icon(
             Icons.error_outline,
@@ -549,7 +561,7 @@ class _AccountsTabState extends State<AccountsTab> {
         );
       }
     } else {
-      secondary = Tooltip(
+      secondaryDisplay = Tooltip(
         message: 'Exchange rates not loaded yet',
         child: Icon(
           Icons.error_outline,
@@ -559,6 +571,14 @@ class _AccountsTabState extends State<AccountsTab> {
       );
     }
 
+    final secondary = SizedBox(
+      width: 120,
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: secondaryDisplay,
+      ),
+    );
+
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
@@ -566,18 +586,13 @@ class _AccountsTabState extends State<AccountsTab> {
           nativeText,
           style: theme.textTheme.titleMedium,
         ),
-        const SizedBox(width: 16),
-        SizedBox(
-          width: 140,
-          child: Align(
-            alignment: Alignment.centerRight,
-            child: secondary is Text
-                ? Text(
-                    (secondary as Text).data ?? '',
-                    style: theme.textTheme.titleMedium,
-                  )
-                : secondary,
-          ),
+        const SizedBox(width: 10),
+        secondary,
+        const SizedBox(width: 30),
+        IconButton(
+          icon: const Icon(Icons.history),
+          tooltip: 'Account updates',
+          onPressed: () => _openAccountUpdates(account),
         ),
         IconButton(
           icon: const Icon(Icons.delete_outline),
@@ -613,6 +628,299 @@ class TransactionsTab extends StatefulWidget {
   @override
   State<TransactionsTab> createState() => _TransactionsTabState();
 }
+
+class AccountUpdatesPage extends StatefulWidget {
+  const AccountUpdatesPage({super.key, required this.account});
+
+  final Account account;
+
+  @override
+  State<AccountUpdatesPage> createState() => _AccountUpdatesPageState();
+}
+
+class _AccountUpdatesPageState extends State<AccountUpdatesPage> {
+  late final AccountUpdatesController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    final id = widget.account.id;
+    assert(id != null, 'Account must have an id to view updates.');
+    _controller = AccountUpdatesController(AccountDatabase.instance, id!)
+      ..addListener(_handleControllerChange);
+    _controller.loadUpdates();
+  }
+
+  @override
+  void dispose() {
+    _controller
+      ..removeListener(_handleControllerChange)
+      ..dispose();
+    super.dispose();
+  }
+
+  void _handleControllerChange() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Updates • ${widget.account.name}'),
+      ),
+      body: _buildBody(),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _createUpdate,
+        tooltip: 'Add update',
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_controller.isLoading && _controller.updates.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_controller.updates.isEmpty) {
+      return const Center(
+        child: Text('No updates recorded for this account.'),
+      );
+    }
+
+    final updates = _controller.updates;
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 88),
+      itemCount: updates.length,
+      separatorBuilder: (_, __) => const Divider(height: 0),
+      itemBuilder: (context, index) {
+        final update = updates[index];
+        return ListTile(
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          title: Text(_formatUpdateTimestamp(update.updatedAt)),
+          subtitle: Text(
+            'Previous: ${update.previousBalance.toStringAsFixed(
+                  suggestPrecision(widget.account.currency.toUpperCase()),
+                )} ${widget.account.currency}\n'
+            'New: ${update.newBalance.toStringAsFixed(
+                  suggestPrecision(widget.account.currency.toUpperCase()),
+                )} ${widget.account.currency}',
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              IconButton(
+                icon: const Icon(Icons.edit),
+                tooltip: 'Edit update',
+                onPressed: () => _editUpdate(update),
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline),
+                tooltip: 'Delete update',
+                onPressed: () => _deleteUpdate(update),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _createUpdate() async {
+    final result = await _showUpdateDialog();
+    if (result != null) {
+      await _controller.addUpdate(result);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Account update added.')),
+      );
+    }
+  }
+
+  Future<void> _editUpdate(AccountUpdate update) async {
+    final result = await _showUpdateDialog(existing: update);
+    if (result != null) {
+      await _controller.updateUpdate(result);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Account update saved.')),
+      );
+    }
+  }
+
+  Future<void> _deleteUpdate(AccountUpdate update) async {
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Delete update?'),
+          content: const Text('This will remove the selected account update.'),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldDelete == true) {
+      await _controller.deleteUpdate(update);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Account update deleted.')),
+      );
+    }
+  }
+
+  Future<AccountUpdate?> _showUpdateDialog({AccountUpdate? existing}) async {
+    final precision =
+        suggestPrecision(widget.account.currency.toUpperCase());
+    final previousController = TextEditingController(
+      text: existing != null
+          ? existing.previousBalance.toStringAsFixed(precision)
+          : widget.account.balance.toStringAsFixed(precision),
+    );
+    final newController = TextEditingController(
+      text: existing != null
+          ? existing.newBalance.toStringAsFixed(precision)
+          : widget.account.balance.toStringAsFixed(precision),
+    );
+    DateTime selected = existing?.updatedAt ?? DateTime.now();
+    String? error;
+
+    return showDialog<AccountUpdate>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            Future<void> pickDateTime() async {
+              final date = await showDatePicker(
+                context: context,
+                initialDate: selected,
+                firstDate: DateTime(2000),
+                lastDate: DateTime.now().add(const Duration(days: 3650)),
+              );
+              if (date == null) {
+                return;
+              }
+              final time = await showTimePicker(
+                context: context,
+                initialTime: TimeOfDay.fromDateTime(selected),
+              );
+              final merged = DateTime(
+                date.year,
+                date.month,
+                date.day,
+                time?.hour ?? selected.hour,
+                time?.minute ?? selected.minute,
+              );
+              setState(() {
+                selected = merged;
+              });
+            }
+
+            void submit() {
+              final previous = double.tryParse(previousController.text.trim());
+              final next = double.tryParse(newController.text.trim());
+              if (previous == null || next == null) {
+                setState(() {
+                  error = 'Balances must be numeric.';
+                });
+                return;
+              }
+              final update = AccountUpdate(
+                id: existing?.id,
+                accountId: widget.account.id!,
+                previousBalance: previous,
+                newBalance: next,
+                updatedAt: selected,
+              );
+              Navigator.of(context).pop(update);
+            }
+
+            return AlertDialog(
+              title: Text(existing != null ? 'Edit update' : 'Add update'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  TextField(
+                    controller: previousController,
+                    decoration: const InputDecoration(labelText: 'Previous balance'),
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: newController,
+                    decoration: const InputDecoration(labelText: 'New balance'),
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: <Widget>[
+                      Text(
+                        _formatUpdateTimestamp(selected),
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      TextButton(
+                        onPressed: pickDateTime,
+                        child: const Text('Change'),
+                      ),
+                    ],
+                  ),
+                  if (error != null) ...<Widget>[
+                    const SizedBox(height: 8),
+                    Text(
+                      error!,
+                      style: const TextStyle(color: Colors.red),
+                    ),
+                  ],
+                ],
+              ),
+              actions: <Widget>[
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: submit,
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  String _formatUpdateTimestamp(DateTime time) {
+    String two(int value) => value.toString().padLeft(2, '0');
+    final local = time.toLocal();
+    return '${local.year}-${two(local.month)}-${two(local.day)} '
+        '${two(local.hour)}:${two(local.minute)}';
+  }
+}
+
 
 class _TransactionsTabState extends State<TransactionsTab> {
   late final TransactionsController _controller;

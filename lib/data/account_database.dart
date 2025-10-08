@@ -339,6 +339,51 @@ class AccountDatabase {
     return rows.map(AccountUpdate.fromMap).toList();
   }
 
+  Future<List<AccountUpdate>> fetchAccountUpdatesForAccount(
+    int accountId,
+  ) async {
+    final db = await database;
+    final rows = await db.query(
+      accountUpdatesTable,
+      where: 'account_id = ?',
+      whereArgs: <Object?>[accountId],
+      orderBy: 'datetime(updated_at) DESC, id DESC',
+    );
+    return rows.map(AccountUpdate.fromMap).toList();
+  }
+
+  Future<AccountUpdate> insertAccountUpdate(AccountUpdate update) async {
+    final db = await database;
+    final data = Map<String, Object?>.from(update.toMap())
+      ..remove('id');
+    final newId = await db.insert(accountUpdatesTable, data);
+    return update.copyWith(id: newId);
+  }
+
+  Future<AccountUpdate> updateAccountUpdate(AccountUpdate update) async {
+    final id = update.id;
+    if (id == null) {
+      throw ArgumentError('Account update id cannot be null when updating.');
+    }
+    final db = await database;
+    await db.update(
+      accountUpdatesTable,
+      update.toMap(),
+      where: 'id = ?',
+      whereArgs: <Object?>[id],
+    );
+    return update;
+  }
+
+  Future<void> deleteAccountUpdate(int id) async {
+    final db = await database;
+    await db.delete(
+      accountUpdatesTable,
+      where: 'id = ?',
+      whereArgs: <Object?>[id],
+    );
+  }
+
   Future<Account> _fetchAccount(Database db, int accountId) async {
     final rows = await db.query(
       accountsTable,
