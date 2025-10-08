@@ -337,7 +337,6 @@ class _AccountsTabState extends State<AccountsTab> {
         return;
       }
 
-      final missingCurrencies = <String>{};
       var total = 0.0;
 
       for (final Account account in accounts) {
@@ -349,9 +348,8 @@ class _AccountsTabState extends State<AccountsTab> {
 
         final rate = rates[currency];
         if (rate == null || rate == 0) {
-          missingCurrencies.add(currency);
           debugPrint(
-            'AccountsTab: missing or zero rate for $currency, skipping in total.',
+            'AccountsTab: missing or zero rate for $currency, treating as 0.',
           );
           continue;
         }
@@ -365,26 +363,13 @@ class _AccountsTabState extends State<AccountsTab> {
 
       setState(() {
         _isTotalLoading = false;
-        if (missingCurrencies.isNotEmpty) {
-          final missingList = missingCurrencies.toList()..sort();
-          _totalEur = null;
-          _totalError = 'Missing rates for ${missingList.join(', ')}.';
-        } else {
-          _totalEur = total;
-          _totalError = null;
-        }
+        _totalEur = total;
+        _totalError = null;
       });
-      if (missingCurrencies.isNotEmpty) {
-        debugPrint(
-          'AccountsTab: total unavailable due to missing currencies: '
-          '${missingCurrencies.join(', ')}',
-        );
-      } else {
-        debugPrint(
-          'AccountsTab: total calculation complete. EUR total = '
-          '${total.toStringAsFixed(2)}',
-        );
-      }
+      debugPrint(
+        'AccountsTab: total calculation complete. EUR total = '
+        '${total.toStringAsFixed(2)}',
+      );
     } catch (error, stackTrace) {
       if (!mounted || generation != _calculationGeneration) {
         return;

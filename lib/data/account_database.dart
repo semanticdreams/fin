@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -183,10 +184,21 @@ class AccountDatabase {
     final accountId = record.accountId;
     final account = await _fetchAccount(db, accountId);
     final rates = await _ratesService.fetchRates();
-    final converted =
-        _convertAmount(record.amount, record.currency, account.currency, rates);
-    final newBalance = account.balance + converted;
-    await _updateAccountBalance(db, account, newBalance);
+    final converted = _convertAmountOrNull(
+      record.amount,
+      record.currency,
+      account.currency,
+      rates,
+    );
+    if (converted == null) {
+      debugPrint(
+        'AccountDatabase: unable to convert ${record.currency} -> '
+        '${account.currency}; skipping account update.',
+      );
+    } else {
+      final newBalance = account.balance + converted;
+      await _updateAccountBalance(db, account, newBalance);
+    }
 
     final data = Map<String, Object?>.from(record.toMap())
       ..remove('id'); // id auto-generates
@@ -214,43 +226,64 @@ class AccountDatabase {
 
     if (existing.accountId == record.accountId) {
       final account = await _fetchAccount(db, record.accountId);
-      final oldConverted = _convertAmount(
+      final oldConverted = _convertAmountOrNull(
         existing.amount,
         existing.currency,
         account.currency,
         rates,
       );
-      final newConverted = _convertAmount(
+      final newConverted = _convertAmountOrNull(
         record.amount,
         record.currency,
         account.currency,
         rates,
       );
-      final delta = newConverted - oldConverted;
-      if (delta.abs() > _epsilon) {
-        final newBalance = account.balance + delta;
-        await _updateAccountBalance(db, account, newBalance);
+      if (oldConverted == null || newConverted == null) {
+        debugPrint(
+          'AccountDatabase: missing rate for transaction update on account '
+          '${account.id}; skipping balance adjustment.',
+        );
+      } else {
+        final delta = newConverted - oldConverted;
+        if (delta.abs() > _epsilon) {
+          final newBalance = account.balance + delta;
+          await _updateAccountBalance(db, account, newBalance);
+        }
       }
     } else {
       final oldAccount = await _fetchAccount(db, existing.accountId);
-      final oldConverted = _convertAmount(
+      final oldConverted = _convertAmountOrNull(
         existing.amount,
         existing.currency,
         oldAccount.currency,
         rates,
       );
-      final oldNewBalance = oldAccount.balance - oldConverted;
-      await _updateAccountBalance(db, oldAccount, oldNewBalance);
+      if (oldConverted != null) {
+        final oldNewBalance = oldAccount.balance - oldConverted;
+        await _updateAccountBalance(db, oldAccount, oldNewBalance);
+      } else {
+        debugPrint(
+          'AccountDatabase: missing rate when reverting old transaction '
+          'from account ${oldAccount.id}.',
+        );
+      }
 
       final newAccount = await _fetchAccount(db, record.accountId);
-      final newConverted = _convertAmount(
+      final newConverted = _convertAmountOrNull(
         record.amount,
         record.currency,
         newAccount.currency,
         rates,
       );
-      final newBalance = newAccount.balance + newConverted;
-      await _updateAccountBalance(db, newAccount, newBalance);
+      if (newConverted != null) {
+        final newBalance = newAccount.balance + newConverted;
+        await _updateAccountBalance(db, newAccount, newBalance);
+      } else {
+        debugPrint(
+          'AccountDatabase: missing rate when applying transaction to account '
+          '${newAccount.id}.',
+        );
+      }
     }
 
     await db.update(
@@ -274,14 +307,21 @@ class AccountDatabase {
       final existing = TransactionRecord.fromMap(existingRows.first);
       final rates = await _ratesService.fetchRates();
       final account = await _fetchAccount(db, existing.accountId);
-      final converted = _convertAmount(
+      final converted = _convertAmountOrNull(
         existing.amount,
         existing.currency,
         account.currency,
         rates,
       );
-      final newBalance = account.balance - converted;
-      await _updateAccountBalance(db, account, newBalance);
+      if (converted != null) {
+        final newBalance = account.balance - converted;
+        await _updateAccountBalance(db, account, newBalance);
+      } else {
+        debugPrint(
+          'AccountDatabase: missing rate when deleting transaction from '
+          'account ${account.id}.',
+        );
+      }
     }
     await db.delete(
       transactionsTable,
@@ -335,7 +375,7 @@ class AccountDatabase {
     });
   }
 
-  double _convertAmount(
+  double? _convertAmountOrNull(
     double amount,
     String fromCurrency,
     String toCurrency,
@@ -353,7 +393,7 @@ class AccountDatabase {
     } else {
       final fromRate = rates[from];
       if (fromRate == null || fromRate == 0) {
-        throw ArgumentError('Missing exchange rate for $from.');
+        return null;
       }
       amountInEur = amount / fromRate;
     }
@@ -363,7 +403,7 @@ class AccountDatabase {
     }
     final toRate = rates[to];
     if (toRate == null || toRate == 0) {
-      throw ArgumentError('Missing exchange rate for $to.');
+      return null;
     }
     return amountInEur * toRate;
   }
