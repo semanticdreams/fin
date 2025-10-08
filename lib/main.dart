@@ -1,7 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:window_manager/window_manager.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'data/account.dart';
 import 'data/account_database.dart';
@@ -26,8 +31,28 @@ int suggestPrecision(String currency) {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await _initWindowIcon();
   await _initDatabaseFactory();
   runApp(const FinApp());
+}
+
+Future<void> _initWindowIcon() async {
+  if (kIsWeb) {
+    return;
+  }
+  if (!(Platform.isWindows || Platform.isLinux)) {
+    return;
+  }
+  try {
+    await windowManager.ensureInitialized();
+    final data = await rootBundle.load('assets/icon.png');
+    final dir = await getTemporaryDirectory();
+    final file = File('${dir.path}/fin_window_icon.png');
+    await file.writeAsBytes(data.buffer.asUint8List());
+    await windowManager.setIcon(file.path);
+  } catch (error, stackTrace) {
+    debugPrint('Failed to set window icon: $error\n$stackTrace');
+  }
 }
 
 Future<void> _initDatabaseFactory() async {
