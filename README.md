@@ -1,16 +1,3 @@
 # fin
 
-A new Flutter project.
-
-## Getting Started
-
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+`fin` is a lightweight desktop/mobile Flutter app for tracking personal account balances. It stores your financial accounts locally, keeps an audit trail of manual balance adjustments, and converts everything to EUR totals. Crypto support is broken since traditionally public APIs are gone.
