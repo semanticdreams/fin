@@ -1,5 +1,0 @@
-- `flutter pub get` – fetch dependencies when pubspec changes.
-- `flutter analyze` – run static analysis with repo lints.
-- `flutter test` / `flutter test --coverage` – execute unit & widget tests.
-- `flutter run -d chrome` – launch web target for UI review.
-- `flutter build apk --release` – create Android release build (update version before running).

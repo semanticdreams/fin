@@ -1,3 +1,0 @@
-- Follow Flutter defaults: 2-space indent, `UpperCamelCase` types, `lowerCamelCase` members, `SCREAMING_CAPS` constants.
-- Prefer small, composable widgets with private helpers in same file; use `const` constructors when possible.
-- Lints configured via `analysis_options.yaml`; prefer local suppressions rather than global disables.
