@@ -11,6 +11,17 @@ import 'data/stats_controller.dart';
 import 'data/transaction_record.dart';
 import 'data/transactions_controller.dart';
 
+int suggestPrecision(String currency) {
+  switch (currency.toUpperCase()) {
+    case 'BTC':
+      return 8;
+    case 'ETH':
+      return 6;
+    default:
+      return 2;
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await _initDatabaseFactory();
@@ -135,7 +146,7 @@ class _HomeScaffoldState extends State<HomeScaffold>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Personal Accounts'),
+        title: const Text('fin'),
         bottom: TabBar(
           controller: _tabController,
           tabs: const <Tab>[
@@ -161,10 +172,10 @@ class _HomeScaffoldState extends State<HomeScaffold>
             key: _transactionsTabKey,
             onAccountsChanged: _handleAccountsChanged,
           ),
-          AccountsTab(
-            key: _accountsTabKey,
-            onAccountsChanged: _handleAccountsChanged,
-          ),
+            AccountsTab(
+              key: _accountsTabKey,
+              onAccountsChanged: _handleAccountsChanged,
+            ),
           StatsTab(key: _statsTabKey),
         ],
       ),
@@ -189,6 +200,7 @@ class _AccountsTabState extends State<AccountsTab> {
   double? _totalEur;
   String? _totalError;
   int _calculationGeneration = 0;
+  Map<String, double>? _cachedRates;
 
   @override
   void initState() {
@@ -270,8 +282,9 @@ class _AccountsTabState extends State<AccountsTab> {
             itemBuilder: (context, index) {
               final account = _controller.accounts[index];
               return ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 title: Text(account.name),
-                subtitle: Text(account.currency),
                 leading: CircleAvatar(
                   backgroundColor:
                       Theme.of(context).colorScheme.primaryContainer,
@@ -280,20 +293,7 @@ class _AccountsTabState extends State<AccountsTab> {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    Text(
-                      _formatBalance(account),
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.delete_outline),
-                      tooltip: 'Delete account',
-                      onPressed: () => _confirmDelete(account),
-                    ),
-                  ],
-                ),
+                trailing: _buildAccountTrailing(account),
                 onTap: () => _editAccount(account),
               );
             },
@@ -333,6 +333,7 @@ class _AccountsTabState extends State<AccountsTab> {
 
     try {
       final rates = await _ratesService.fetchRates();
+      _cachedRates = rates;
       if (!mounted || generation != _calculationGeneration) {
         return;
       }
@@ -379,6 +380,7 @@ class _AccountsTabState extends State<AccountsTab> {
         _totalEur = null;
         _totalError = 'Could not refresh exchange rates.';
       });
+      _cachedRates = null;
       debugPrint(
         'AccountsTab: error while refreshing exchange rates: $error\n'
         '$stackTrace',
@@ -514,8 +516,92 @@ class _AccountsTabState extends State<AccountsTab> {
   }
 
   String _formatBalance(Account account) {
-    final balance = account.balance.toStringAsFixed(2);
+    final currency = account.currency.toUpperCase();
+    final precision = suggestPrecision(currency);
+    final balance = account.balance.toStringAsFixed(precision);
     return '$balance ${account.currency}';
+  }
+
+  Widget _buildAccountTrailing(Account account) {
+    final theme = Theme.of(context);
+    final currency = account.currency.toUpperCase();
+    final precision = suggestPrecision(currency);
+    final nativeText =
+        '${account.balance.toStringAsFixed(precision)} ${account.currency}';
+
+    final rates = _cachedRates;
+    Widget secondary;
+    if (rates != null) {
+      final eurValue = _convertToEur(account.balance, currency, rates);
+      if (eurValue != null) {
+        secondary = Text(
+          '€${eurValue.toStringAsFixed(2)}',
+          style: theme.textTheme.titleMedium,
+        );
+      } else {
+        secondary = Tooltip(
+          message: 'Missing exchange rate for $currency',
+          child: Icon(
+            Icons.error_outline,
+            color: theme.colorScheme.error,
+            size: 18,
+          ),
+        );
+      }
+    } else {
+      secondary = Tooltip(
+        message: 'Exchange rates not loaded yet',
+        child: Icon(
+          Icons.error_outline,
+          color: theme.colorScheme.error,
+          size: 18,
+        ),
+      );
+    }
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Text(
+          nativeText,
+          style: theme.textTheme.titleMedium,
+        ),
+        const SizedBox(width: 16),
+        SizedBox(
+          width: 140,
+          child: Align(
+            alignment: Alignment.centerRight,
+            child: secondary is Text
+                ? Text(
+                    (secondary as Text).data ?? '',
+                    style: theme.textTheme.titleMedium,
+                  )
+                : secondary,
+          ),
+        ),
+        IconButton(
+          icon: const Icon(Icons.delete_outline),
+          tooltip: 'Delete account',
+          onPressed: () => _confirmDelete(account),
+        ),
+      ],
+    );
+  }
+
+  double? _convertToEur(
+    double amount,
+    String currency,
+    Map<String, double> rates,
+  ) {
+    final upper = currency.toUpperCase();
+    if (upper == 'EUR') {
+      return amount;
+    }
+    final rate = rates[upper];
+    if (rate == null || rate == 0) {
+      return null;
+    }
+    return amount / rate;
   }
 }
 
@@ -625,7 +711,9 @@ class _TransactionsTabState extends State<TransactionsTab> {
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
               Text(
-                '${transaction.amount.toStringAsFixed(2)} ${transaction.currency}',
+                '${transaction.amount.toStringAsFixed(
+                      suggestPrecision(transaction.currency.toUpperCase()),
+                    )} ${transaction.currency}',
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               IconButton(
@@ -776,29 +864,31 @@ class _StatsTabState extends State<StatsTab> {
     final latest = points.last;
     final colorScheme = Theme.of(context).colorScheme;
 
-    return ListView(
+    return Padding(
       padding: const EdgeInsets.all(16),
-      children: <Widget>[
-        Text(
-          'Total balance over time',
-          style: Theme.of(context).textTheme.titleMedium,
-        ),
-        const SizedBox(height: 16),
-        SizedBox(
-          height: 240,
-          child: _LineChart(
-            points: points,
-            lineColor: colorScheme.primary,
-            fillColor: colorScheme.primary.withOpacity(0.18),
-            axisColor: colorScheme.outlineVariant,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Text(
+            'Total balance over time',
+            style: Theme.of(context).textTheme.titleMedium,
           ),
-        ),
-        const SizedBox(height: 16),
-        Text(
-          'Latest total: ${latest.total.toStringAsFixed(2)} EUR\nUpdated: ${_formatTimestamp(latest.time)}',
-          style: Theme.of(context).textTheme.bodyMedium,
-        ),
-      ],
+          const SizedBox(height: 16),
+          Expanded(
+            child: _LineChart(
+              points: points,
+              lineColor: colorScheme.primary,
+              fillColor: colorScheme.primary.withOpacity(0.18),
+              axisColor: colorScheme.outlineVariant,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Latest total: ${latest.total.toStringAsFixed(2)} EUR\nUpdated: ${_formatTimestamp(latest.time)}',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ],
+      ),
     );
   }
 
@@ -1012,7 +1102,10 @@ class _TransactionDialogState extends State<_TransactionDialog> {
 
     _titleController = TextEditingController(text: existing?.title ?? '');
     _amountController = TextEditingController(
-      text: existing != null ? existing.amount.toStringAsFixed(2) : '',
+      text: existing != null
+          ? existing.amount
+              .toStringAsFixed(suggestPrecision(existing.currency.toUpperCase()))
+          : '',
     );
     _selectedAccountId = existing?.accountId ?? defaultAccount?.id;
     _selectedCurrency = _resolveInitialCurrency(
