@@ -2,8 +2,9 @@ import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 
 import 'account.dart';
-import 'transaction_record.dart';
 import 'account_update.dart';
+import 'currency_rates_service.dart';
+import 'transaction_record.dart';
 
 class AccountDatabase {
   AccountDatabase._();
@@ -14,7 +15,9 @@ class AccountDatabase {
   static const String accountsTable = 'accounts';
   static const String transactionsTable = 'transactions';
   static const String accountUpdatesTable = 'account_updates';
+  static const double _epsilon = 0.0001;
 
+  final CurrencyRatesService _ratesService = CurrencyRatesService();
   Database? _database;
 
   Future<Database> get database async {
@@ -177,6 +180,14 @@ class AccountDatabase {
 
   Future<TransactionRecord> insertTransaction(TransactionRecord record) async {
     final db = await database;
+    final accountId = record.accountId;
+    final account = await _fetchAccount(db, accountId);
+    final rates = await _ratesService.fetchRates();
+    final converted =
+        _convertAmount(record.amount, record.currency, account.currency, rates);
+    final newBalance = account.balance + converted;
+    await _updateAccountBalance(db, account, newBalance);
+
     final data = Map<String, Object?>.from(record.toMap())
       ..remove('id'); // id auto-generates
     final newId = await db.insert(transactionsTable, data);
@@ -189,6 +200,59 @@ class AccountDatabase {
     if (id == null) {
       throw ArgumentError('Transaction id cannot be null when updating.');
     }
+    final existingRows = await db.query(
+      transactionsTable,
+      where: 'id = ?',
+      whereArgs: <Object?>[id],
+      limit: 1,
+    );
+    if (existingRows.isEmpty) {
+      throw ArgumentError('Transaction with id $id does not exist.');
+    }
+    final existing = TransactionRecord.fromMap(existingRows.first);
+    final rates = await _ratesService.fetchRates();
+
+    if (existing.accountId == record.accountId) {
+      final account = await _fetchAccount(db, record.accountId);
+      final oldConverted = _convertAmount(
+        existing.amount,
+        existing.currency,
+        account.currency,
+        rates,
+      );
+      final newConverted = _convertAmount(
+        record.amount,
+        record.currency,
+        account.currency,
+        rates,
+      );
+      final delta = newConverted - oldConverted;
+      if (delta.abs() > _epsilon) {
+        final newBalance = account.balance + delta;
+        await _updateAccountBalance(db, account, newBalance);
+      }
+    } else {
+      final oldAccount = await _fetchAccount(db, existing.accountId);
+      final oldConverted = _convertAmount(
+        existing.amount,
+        existing.currency,
+        oldAccount.currency,
+        rates,
+      );
+      final oldNewBalance = oldAccount.balance - oldConverted;
+      await _updateAccountBalance(db, oldAccount, oldNewBalance);
+
+      final newAccount = await _fetchAccount(db, record.accountId);
+      final newConverted = _convertAmount(
+        record.amount,
+        record.currency,
+        newAccount.currency,
+        rates,
+      );
+      final newBalance = newAccount.balance + newConverted;
+      await _updateAccountBalance(db, newAccount, newBalance);
+    }
+
     await db.update(
       transactionsTable,
       record.toMap(),
@@ -200,6 +264,25 @@ class AccountDatabase {
 
   Future<void> deleteTransaction(int id) async {
     final db = await database;
+    final existingRows = await db.query(
+      transactionsTable,
+      where: 'id = ?',
+      whereArgs: <Object?>[id],
+      limit: 1,
+    );
+    if (existingRows.isNotEmpty) {
+      final existing = TransactionRecord.fromMap(existingRows.first);
+      final rates = await _ratesService.fetchRates();
+      final account = await _fetchAccount(db, existing.accountId);
+      final converted = _convertAmount(
+        existing.amount,
+        existing.currency,
+        account.currency,
+        rates,
+      );
+      final newBalance = account.balance - converted;
+      await _updateAccountBalance(db, account, newBalance);
+    }
     await db.delete(
       transactionsTable,
       where: 'id = ?',
@@ -214,5 +297,74 @@ class AccountDatabase {
       orderBy: 'datetime(updated_at) ASC, id ASC',
     );
     return rows.map(AccountUpdate.fromMap).toList();
+  }
+
+  Future<Account> _fetchAccount(Database db, int accountId) async {
+    final rows = await db.query(
+      accountsTable,
+      where: 'id = ?',
+      whereArgs: <Object?>[accountId],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      throw ArgumentError('Account with id $accountId does not exist.');
+    }
+    return Account.fromMap(rows.first);
+  }
+
+  Future<void> _updateAccountBalance(
+    Database db,
+    Account account,
+    double newBalance,
+  ) async {
+    if ((account.balance - newBalance).abs() <= _epsilon) {
+      return;
+    }
+    final updatedAccount = account.copyWith(balance: newBalance);
+    await db.update(
+      accountsTable,
+      updatedAccount.toMap(),
+      where: 'id = ?',
+      whereArgs: <Object?>[account.id],
+    );
+    await db.insert(accountUpdatesTable, <String, Object?>{
+      'account_id': account.id,
+      'previous_balance': account.balance,
+      'new_balance': newBalance,
+      'updated_at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  double _convertAmount(
+    double amount,
+    String fromCurrency,
+    String toCurrency,
+    Map<String, double> rates,
+  ) {
+    final from = fromCurrency.toUpperCase();
+    final to = toCurrency.toUpperCase();
+    if (from == to) {
+      return amount;
+    }
+
+    double amountInEur;
+    if (from == 'EUR') {
+      amountInEur = amount;
+    } else {
+      final fromRate = rates[from];
+      if (fromRate == null || fromRate == 0) {
+        throw ArgumentError('Missing exchange rate for $from.');
+      }
+      amountInEur = amount / fromRate;
+    }
+
+    if (to == 'EUR') {
+      return amountInEur;
+    }
+    final toRate = rates[to];
+    if (toRate == null || toRate == 0) {
+      throw ArgumentError('Missing exchange rate for $to.');
+    }
+    return amountInEur * toRate;
   }
 }

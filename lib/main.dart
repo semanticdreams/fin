@@ -108,6 +108,7 @@ class _HomeScaffoldState extends State<HomeScaffold>
   }
 
   void _handleAccountsChanged() {
+    _accountsTabKey.currentState?.refreshAccounts();
     _refreshStats();
   }
 
@@ -156,7 +157,10 @@ class _HomeScaffoldState extends State<HomeScaffold>
       body: TabBarView(
         controller: _tabController,
         children: <Widget>[
-          TransactionsTab(key: _transactionsTabKey),
+          TransactionsTab(
+            key: _transactionsTabKey,
+            onAccountsChanged: _handleAccountsChanged,
+          ),
           AccountsTab(
             key: _accountsTabKey,
             onAccountsChanged: _handleAccountsChanged,
@@ -220,6 +224,9 @@ class _AccountsTabState extends State<AccountsTab> {
   }
 
   Future<void> createAccount() => _createAccount();
+  Future<void> refreshAccounts() async {
+    await _controller.loadAccounts();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -528,7 +535,9 @@ class _AccountsTabState extends State<AccountsTab> {
 }
 
 class TransactionsTab extends StatefulWidget {
-  const TransactionsTab({super.key});
+  const TransactionsTab({super.key, this.onAccountsChanged});
+
+  final VoidCallback? onAccountsChanged;
 
   @override
   State<TransactionsTab> createState() => _TransactionsTabState();
@@ -591,6 +600,7 @@ class _TransactionsTabState extends State<TransactionsTab> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Transaction saved.')),
       );
+      widget.onAccountsChanged?.call();
     }
   }
 
@@ -664,6 +674,7 @@ class _TransactionsTabState extends State<TransactionsTab> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Transaction updated.')),
       );
+      widget.onAccountsChanged?.call();
     }
   }
 
@@ -697,6 +708,7 @@ class _TransactionsTabState extends State<TransactionsTab> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('"${transaction.title}" deleted.')),
       );
+      widget.onAccountsChanged?.call();
     }
   }
 
