@@ -4,13 +4,17 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart';
 
+import 'currency_rates_cache.dart';
+
 /// Lightweight client to fetch EUR-based exchange rates.
 class CurrencyRatesService {
   CurrencyRatesService({
     http.Client? client,
     Duration? cacheDuration,
+    CurrencyRatesStore? store,
   })  : _client = client ?? http.Client(),
-        _cacheDuration = cacheDuration ?? const Duration(hours: 24);
+        _cacheDuration = cacheDuration ?? const Duration(hours: 24),
+        _store = store ?? CurrencyRatesCacheDatabase.instance;
 
   static final Uri _endpoint = Uri.parse(
     'https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml',
@@ -27,41 +31,81 @@ class CurrencyRatesService {
   Map<String, double>? _cachedRates;
   DateTime? _lastFetchTime;
   final Duration _cacheDuration;
+  final CurrencyRatesStore _store;
+  bool _hasLoadedFromStorage = false;
   String? _yahooCookie;
   DateTime? _yahooCookieFetchedAt;
 
   Future<Map<String, double>> fetchRates() async {
+    await _primeFromStorage();
+
     final cached = _cachedRates;
     final lastFetch = _lastFetchTime;
+    final DateTime now = DateTime.now();
     if (cached != null &&
         lastFetch != null &&
-        DateTime.now().difference(lastFetch) < _cacheDuration) {
+        now.difference(lastFetch) < _cacheDuration) {
       debugPrint(
         'CurrencyRatesService: returning cached rates from $_lastFetchTime.',
       );
       return cached;
     }
 
-    final now = DateTime.now();
     final Map<String, double> combined = <String, double>{};
 
-    final Map<String, double> baseRates = await _fetchEcbRates();
-    combined.addAll(baseRates);
-
     try {
-      final cryptoRates = await _fetchCryptoRates(baseRates);
-      combined.addAll(cryptoRates);
+      final Map<String, double> baseRates = await _fetchEcbRates();
+      combined.addAll(baseRates);
+
+      try {
+        final cryptoRates = await _fetchCryptoRates(baseRates);
+        combined.addAll(cryptoRates);
+      } catch (error, stackTrace) {
+        debugPrint(
+          'CurrencyRatesService: failed to fetch crypto rates: $error\n'
+          '$stackTrace',
+        );
+      }
     } catch (error, stackTrace) {
       debugPrint(
-        'CurrencyRatesService: failed to fetch crypto rates: $error\n'
+        'CurrencyRatesService: failed to refresh exchange rates: $error\n'
+        '$stackTrace',
+      );
+      if (cached != null) {
+        debugPrint(
+          'CurrencyRatesService: falling back to cached rates from $_lastFetchTime.',
+        );
+        return cached;
+      }
+      rethrow;
+    }
+
+    final DateTime fetchedAt = DateTime.now();
+    final unmodifiable = Map<String, double>.unmodifiable(combined);
+    _cachedRates = unmodifiable;
+    _lastFetchTime = fetchedAt;
+    try {
+      await _store.saveRates(unmodifiable, fetchedAt);
+    } catch (error, stackTrace) {
+      debugPrint(
+        'CurrencyRatesService: failed to persist exchange rates: $error\n'
         '$stackTrace',
       );
     }
-
-    final unmodifiable = Map<String, double>.unmodifiable(combined);
-    _cachedRates = unmodifiable;
-    _lastFetchTime = now;
     return unmodifiable;
+  }
+
+  Future<Map<String, double>?> loadStoredRates() async {
+    await _primeFromStorage();
+    return _cachedRates;
+  }
+
+  bool get isCacheStale {
+    final lastFetch = _lastFetchTime;
+    if (lastFetch == null) {
+      return true;
+    }
+    return DateTime.now().difference(lastFetch) >= _cacheDuration;
   }
 
   Future<Map<String, double>> _fetchEcbRates() async {
@@ -288,6 +332,30 @@ class CurrencyRatesService {
   void clearCache() {
     _cachedRates = null;
     _lastFetchTime = null;
+    _hasLoadedFromStorage = false;
+  }
+
+  Future<void> _primeFromStorage() async {
+    if (_hasLoadedFromStorage) {
+      return;
+    }
+    _hasLoadedFromStorage = true;
+    try {
+      final CachedCurrencyRates? stored = await _store.loadRates();
+      if (stored == null) {
+        return;
+      }
+      _cachedRates = stored.rates;
+      _lastFetchTime = stored.fetchedAt;
+      debugPrint(
+        'CurrencyRatesService: loaded stored rates fetched at ${stored.fetchedAt}.',
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'CurrencyRatesService: failed to load stored rates: $error\n'
+        '$stackTrace',
+      );
+    }
   }
 }
 

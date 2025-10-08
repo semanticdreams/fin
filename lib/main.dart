@@ -380,37 +380,43 @@ class _AccountsTabState extends State<AccountsTab> {
       _totalError = null;
     });
 
+    Map<String, double>? storedRates;
+    try {
+      storedRates = await _ratesService.loadStoredRates();
+    } catch (_) {
+      storedRates = null;
+    }
+
+    if (storedRates != null) {
+      _cachedRates = storedRates;
+      if (!mounted || generation != _calculationGeneration) {
+        return;
+      }
+      final storedTotal = _computeTotalInEur(accounts, storedRates);
+      setState(() {
+        _isTotalLoading = false;
+        _totalEur = storedTotal;
+        _totalError = null;
+      });
+      debugPrint(
+        'AccountsTab: total calculated from stored exchange rates.',
+      );
+      if (!_ratesService.isCacheStale) {
+        return;
+      }
+    }
+
+    if (!mounted || generation != _calculationGeneration) {
+      return;
+    }
+
     try {
       final rates = await _ratesService.fetchRates();
       _cachedRates = rates;
       if (!mounted || generation != _calculationGeneration) {
         return;
       }
-
-      var total = 0.0;
-
-      for (final Account account in accounts) {
-        final currency = account.currency.toUpperCase();
-        if (currency == 'EUR') {
-          total += account.balance;
-          continue;
-        }
-
-        final rate = rates[currency];
-        if (rate == null || rate == 0) {
-          debugPrint(
-            'AccountsTab: missing or zero rate for $currency, treating as 0.',
-          );
-          continue;
-        }
-
-        total += account.balance / rate;
-        debugPrint(
-          'AccountsTab: converted ${account.balance} $currency -> '
-          '${(account.balance / rate).toStringAsFixed(2)} EUR (rate $rate)',
-        );
-      }
-
+      final total = _computeTotalInEur(accounts, rates);
       setState(() {
         _isTotalLoading = false;
         _totalEur = total;
@@ -422,6 +428,13 @@ class _AccountsTabState extends State<AccountsTab> {
       );
     } catch (error, stackTrace) {
       if (!mounted || generation != _calculationGeneration) {
+        return;
+      }
+      if (storedRates != null) {
+        debugPrint(
+          'AccountsTab: error while refreshing exchange rates after using stored copy: '
+          '$error\n$stackTrace',
+        );
         return;
       }
       setState(() {
@@ -671,6 +684,35 @@ class _AccountsTabState extends State<AccountsTab> {
         ),
       ],
     );
+  }
+
+  double _computeTotalInEur(
+    List<Account> accounts,
+    Map<String, double> rates,
+  ) {
+    var total = 0.0;
+    for (final Account account in accounts) {
+      final currency = account.currency.toUpperCase();
+      if (currency == 'EUR') {
+        total += account.balance;
+        continue;
+      }
+
+      final rate = rates[currency];
+      if (rate == null || rate == 0) {
+        debugPrint(
+          'AccountsTab: missing or zero rate for $currency, treating as 0.',
+        );
+        continue;
+      }
+
+      total += account.balance / rate;
+      debugPrint(
+        'AccountsTab: converted ${account.balance} $currency -> '
+        '${(account.balance / rate).toStringAsFixed(2)} EUR (rate $rate)',
+      );
+    }
+    return total;
   }
 
   double? _convertToEur(
