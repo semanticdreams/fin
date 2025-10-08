@@ -329,8 +329,7 @@ class _AccountsTabState extends State<AccountsTab> {
             itemBuilder: (context, index) {
               final account = _controller.accounts[index];
               return ListTile(
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                 title: Text(account.name),
                 subtitle: Text(account.currency.toUpperCase()),
                 leading: CircleAvatar(
