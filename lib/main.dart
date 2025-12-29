@@ -15,8 +15,6 @@ import 'data/account_updates_controller.dart';
 import 'data/accounts_controller.dart';
 import 'data/currency_rates_service.dart';
 import 'data/stats_controller.dart';
-import 'data/transaction_record.dart';
-import 'data/transactions_controller.dart';
 
 int suggestPrecision(String currency) {
   switch (currency.toUpperCase()) {
@@ -104,8 +102,6 @@ class HomeScaffold extends StatefulWidget {
 class _HomeScaffoldState extends State<HomeScaffold>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController;
-  final GlobalKey<_TransactionsTabState> _transactionsTabKey =
-      GlobalKey<_TransactionsTabState>();
   final GlobalKey<_AccountsTabState> _accountsTabKey =
       GlobalKey<_AccountsTabState>();
   final GlobalKey<_StatsTabState> _statsTabKey = GlobalKey<_StatsTabState>();
@@ -113,7 +109,7 @@ class _HomeScaffoldState extends State<HomeScaffold>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 2, vsync: this);
     _tabController.addListener(_handleTabChange);
   }
 
@@ -128,15 +124,12 @@ class _HomeScaffoldState extends State<HomeScaffold>
     if (mounted) {
       setState(() {});
     }
-    if (_tabController.index == 0) {
-      _transactionsTabKey.currentState?.refreshData();
-    } else if (_tabController.index == 2) {
+    if (_tabController.index == 1) {
       _statsTabKey.currentState?.refreshData();
     }
   }
 
-  bool get _isAccountsTab => _tabController.index == 1;
-  bool get _isTransactionsTab => _tabController.index == 0;
+  bool get _isAccountsTab => _tabController.index == 0;
 
   Future<void> _refreshStats() async {
     final state = _statsTabKey.currentState;
@@ -151,14 +144,6 @@ class _HomeScaffoldState extends State<HomeScaffold>
   }
 
   Widget? _buildFab() {
-    if (_isTransactionsTab) {
-      return FloatingActionButton(
-        onPressed: () =>
-            _transactionsTabKey.currentState?.createTransaction(),
-        tooltip: 'Add transaction',
-        child: const Icon(Icons.playlist_add),
-      );
-    }
     if (_isAccountsTab) {
       return FloatingActionButton(
         onPressed: () => _accountsTabKey.currentState?.createAccount(),
@@ -182,10 +167,6 @@ class _HomeScaffoldState extends State<HomeScaffold>
           controller: _tabController,
           tabs: const <Tab>[
             Tab(
-              icon: Icon(Icons.receipt_long_outlined),
-              text: 'Transactions',
-            ),
-            Tab(
               icon: Icon(Icons.account_balance_wallet_outlined),
               text: 'Accounts',
             ),
@@ -199,14 +180,10 @@ class _HomeScaffoldState extends State<HomeScaffold>
       body: TabBarView(
         controller: _tabController,
         children: <Widget>[
-          TransactionsTab(
-            key: _transactionsTabKey,
+          AccountsTab(
+            key: _accountsTabKey,
             onAccountsChanged: _handleAccountsChanged,
           ),
-            AccountsTab(
-              key: _accountsTabKey,
-              onAccountsChanged: _handleAccountsChanged,
-            ),
           StatsTab(key: _statsTabKey),
         ],
       ),
@@ -732,15 +709,6 @@ class _AccountsTabState extends State<AccountsTab> {
   }
 }
 
-class TransactionsTab extends StatefulWidget {
-  const TransactionsTab({super.key, this.onAccountsChanged});
-
-  final VoidCallback? onAccountsChanged;
-
-  @override
-  State<TransactionsTab> createState() => _TransactionsTabState();
-}
-
 class AccountUpdatesPage extends StatefulWidget {
   const AccountUpdatesPage({super.key, required this.account});
 
@@ -1033,200 +1001,6 @@ class _AccountUpdatesPageState extends State<AccountUpdatesPage> {
   }
 }
 
-
-class _TransactionsTabState extends State<TransactionsTab> {
-  late final TransactionsController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TransactionsController(AccountDatabase.instance)
-      ..addListener(_handleControllerChange);
-    _controller.load();
-  }
-
-  @override
-  void dispose() {
-    _controller
-      ..removeListener(_handleControllerChange)
-      ..dispose();
-    super.dispose();
-  }
-
-  void _handleControllerChange() {
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
-  Future<void> refreshData() => _controller.load();
-
-  Future<void> createTransaction() async {
-    await refreshData();
-    if (_controller.accountsById.isEmpty) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Add an account before creating transactions.'),
-        ),
-      );
-      return;
-    }
-
-    final record = await showDialog<TransactionRecord>(
-      context: context,
-      builder: (context) => _TransactionDialog(
-        accounts: _controller.accounts,
-        mostRecent: _controller.mostRecentTransaction,
-        currencies: _currencyOptions(_controller.mostRecentTransaction),
-      ),
-    );
-    if (record != null) {
-      await _controller.addTransaction(record);
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Transaction saved.')),
-      );
-      widget.onAccountsChanged?.call();
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(child: _buildBody());
-  }
-
-  Widget _buildBody() {
-    if (_controller.isLoading && _controller.transactions.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    if (_controller.transactions.isEmpty) {
-      final hasAccounts = _controller.accountsById.isNotEmpty;
-      return Center(
-        child: Text(
-          hasAccounts
-              ? 'No transactions yet. Tap + to add one.'
-              : 'Add an account before creating transactions.',
-        ),
-      );
-    }
-
-    return ListView.separated(
-      padding: const EdgeInsets.only(bottom: 88),
-      itemCount: _controller.transactions.length,
-      separatorBuilder: (_, __) => const Divider(height: 0),
-      itemBuilder: (context, index) {
-        final transaction = _controller.transactions[index];
-        final account = _controller.accountsById[transaction.accountId];
-        final accountName = account?.name ?? 'Account ${transaction.accountId}';
-        return ListTile(
-          title: Text(transaction.title),
-          subtitle: Text('$accountName • ${_formatDate(transaction.createdAt)}'),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Text(
-                '${transaction.amount.toStringAsFixed(
-                      suggestPrecision(transaction.currency.toUpperCase()),
-                    )} ${transaction.currency}',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              IconButton(
-                icon: const Icon(Icons.delete_outline),
-                tooltip: 'Delete transaction',
-                onPressed: () => _confirmDelete(transaction),
-              ),
-            ],
-          ),
-          onTap: () => _editTransaction(transaction),
-        );
-      },
-    );
-  }
-
-  Future<void> _editTransaction(TransactionRecord transaction) async {
-    final updated = await showDialog<TransactionRecord>(
-      context: context,
-      builder: (context) => _TransactionDialog(
-        accounts: _controller.accounts,
-        transaction: transaction,
-        mostRecent: _controller.mostRecentTransaction,
-        currencies: _currencyOptions(transaction),
-      ),
-    );
-    if (updated != null) {
-      await _controller.updateTransaction(updated);
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Transaction updated.')),
-      );
-      widget.onAccountsChanged?.call();
-    }
-  }
-
-  Future<void> _confirmDelete(TransactionRecord transaction) async {
-    final shouldDelete = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Delete transaction?'),
-          content: Text('This will remove "${transaction.title}".'),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              style: TextButton.styleFrom(foregroundColor: Colors.red),
-              child: const Text('Delete'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (shouldDelete == true) {
-      await _controller.deleteTransaction(transaction);
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('"${transaction.title}" deleted.')),
-      );
-      widget.onAccountsChanged?.call();
-    }
-  }
-
-  String _formatDate(DateTime date) {
-    final twoDigits = (int value) => value.toString().padLeft(2, '0');
-    return '${date.year}-${twoDigits(date.month)}-${twoDigits(date.day)}';
-  }
-
-  List<String> _currencyOptions([TransactionRecord? seed]) {
-    final currencies = <String>{
-      for (final account in _controller.accounts)
-        account.currency.toUpperCase(),
-    };
-    final fromTransaction = seed ?? _controller.mostRecentTransaction;
-    if (fromTransaction != null) {
-      currencies.add(fromTransaction.currency.toUpperCase());
-    }
-    final options = currencies.toList()..sort();
-    if (options.isEmpty) {
-      options.add('EUR');
-    }
-    return options;
-  }
-}
-
 class StatsTab extends StatefulWidget {
   const StatsTab({super.key});
 
@@ -1478,278 +1252,6 @@ class _LineChartPainter extends CustomPainter {
         oldDelegate.fillColor != fillColor ||
         oldDelegate.axisColor != axisColor;
   }
-}
-
-class _TransactionDialog extends StatefulWidget {
-  const _TransactionDialog({
-    required this.accounts,
-    required this.currencies,
-    this.transaction,
-    this.mostRecent,
-  });
-
-  final List<Account> accounts;
-  final List<String> currencies;
-  final TransactionRecord? transaction;
-  final TransactionRecord? mostRecent;
-
-  bool get isEditing => transaction != null;
-
-  @override
-  State<_TransactionDialog> createState() => _TransactionDialogState();
-}
-
-class _TransactionDialogState extends State<_TransactionDialog> {
-  late final TextEditingController _titleController;
-  late final TextEditingController _amountController;
-  late final DateTime _createdAt;
-  String? _selectedCurrency;
-  int? _selectedAccountId;
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    final existing = widget.transaction;
-    Account? defaultAccount;
-    if (existing != null) {
-      defaultAccount = _findAccount(widget.accounts, existing.accountId);
-    } else if (widget.mostRecent != null) {
-      defaultAccount = _findAccount(widget.accounts, widget.mostRecent!.accountId);
-    }
-    defaultAccount ??=
-        widget.accounts.isNotEmpty ? widget.accounts.first : null;
-
-    _titleController = TextEditingController(text: existing?.title ?? '');
-    _amountController = TextEditingController(
-      text: existing != null
-          ? existing.amount
-              .toStringAsFixed(suggestPrecision(existing.currency.toUpperCase()))
-          : '',
-    );
-    _selectedAccountId = existing?.accountId ?? defaultAccount?.id;
-    _selectedCurrency = _resolveInitialCurrency(
-      existing?.currency,
-      widget.mostRecent?.currency,
-      defaultAccount?.currency,
-    );
-    _createdAt = existing?.createdAt ?? DateTime.now();
-  }
-
-  @override
-  void dispose() {
-    _titleController.dispose();
-    _amountController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final title = widget.isEditing ? 'Edit transaction' : 'Add transaction';
-
-    return AlertDialog(
-      title: Text(title),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            TextField(
-              controller: _titleController,
-              decoration: const InputDecoration(labelText: 'Title'),
-              textCapitalization: TextCapitalization.sentences,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _amountController,
-              decoration: const InputDecoration(
-                labelText: 'Amount',
-                hintText: '0.00',
-              ),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              value: _selectedCurrency,
-              decoration: const InputDecoration(labelText: 'Currency'),
-              items: _buildCurrencyItems(),
-              onChanged: (value) {
-                if (value == null) {
-                  return;
-                }
-                setState(() {
-                  _selectedCurrency = value;
-                });
-              },
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<int>(
-              value: _selectedAccountId,
-              decoration: const InputDecoration(labelText: 'Account'),
-              items: _buildAccountItems(),
-              onChanged: (value) {
-                if (value == null) {
-                  return;
-                }
-                setState(() {
-                  _selectedAccountId = value;
-                  final account = _findAccountById(value);
-                  if (!widget.isEditing && account != null) {
-                    _selectedCurrency = account.currency.toUpperCase();
-                  }
-                });
-              },
-            ),
-            if (_error != null) ...<Widget>[
-              const SizedBox(height: 8),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
-            ],
-          ],
-        ),
-      ),
-      actions: <Widget>[
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          onPressed: _submit,
-          child: const Text('Save'),
-        ),
-      ],
-    );
-  }
-
-  List<DropdownMenuItem<int>> _buildAccountItems() {
-    final items = widget.accounts
-        .where((account) => account.id != null)
-        .map(
-          (account) => DropdownMenuItem<int>(
-            value: account.id,
-            child: Text(account.name),
-          ),
-        )
-        .toList();
-
-    final selectedId = _selectedAccountId;
-    final hasSelection = selectedId == null
-        ? true
-        : items.any((item) => item.value == selectedId);
-    if (selectedId != null && !hasSelection) {
-      items.insert(
-        0,
-        DropdownMenuItem<int>(
-          value: selectedId,
-          child: Text('Account $selectedId (missing)'),
-        ),
-      );
-    }
-    return items;
-  }
-
-  Account? _findAccountById(int id) {
-    for (final account in widget.accounts) {
-      if (account.id == id) {
-        return account;
-      }
-    }
-    return null;
-  }
-
-  Account? _findAccount(List<Account> accounts, int? id) {
-    if (id == null) {
-      return null;
-    }
-    for (final account in accounts) {
-      if (account.id == id) {
-        return account;
-      }
-    }
-    return null;
-  }
-
-  List<DropdownMenuItem<String>> _buildCurrencyItems() {
-    final items = widget.currencies
-        .map(
-          (currency) => DropdownMenuItem<String>(
-            value: currency,
-            child: Text(currency),
-          ),
-        )
-        .toList();
-    final selected = _selectedCurrency;
-    if (selected != null && !items.any((item) => item.value == selected)) {
-      items.insert(
-        0,
-        DropdownMenuItem<String>(
-          value: selected,
-          child: Text('$selected (missing)'),
-        ),
-      );
-    }
-    return items;
-  }
-
-  String? _resolveInitialCurrency(
-    String? existing,
-    String? mostRecent,
-    String? accountCurrency,
-  ) {
-    final fallback = widget.currencies.isNotEmpty ? widget.currencies.first : null;
-    return (existing ?? mostRecent ?? accountCurrency ?? fallback ?? 'EUR')
-        .toUpperCase();
-  }
-
-  void _submit() {
-    final title = _titleController.text.trim();
-    if (title.isEmpty) {
-      _setError('Title cannot be empty.');
-      return;
-    }
-
-    final parsedAmount = double.tryParse(_amountController.text.trim());
-    if (parsedAmount == null) {
-      _setError('Amount must be a number.');
-      return;
-    }
-
-    final currency = _selectedCurrency;
-    if (currency == null || currency.isEmpty) {
-      _setError('Currency cannot be empty.');
-      return;
-    }
-
-    final accountId = _selectedAccountId;
-    if (accountId == null) {
-      _setError('Select an account.');
-      return;
-    }
-
-    final existing = widget.transaction;
-    final createdAt = _createdAt;
-
-    final result = existing?.copyWith(
-          title: title,
-          createdAt: createdAt,
-          amount: parsedAmount,
-          currency: currency,
-          accountId: accountId,
-        ) ??
-        TransactionRecord(
-          title: title,
-          createdAt: createdAt,
-          amount: parsedAmount,
-          currency: currency,
-          accountId: accountId,
-        );
-    Navigator.of(context).pop(result);
-  }
-
-  void _setError(String message) {
-    setState(() {
-      _error = message;
-    });
-  }
-
 }
 
 class _AccountDialog extends StatefulWidget {

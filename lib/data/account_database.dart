@@ -1,11 +1,8 @@
-import 'package:flutter/foundation.dart';
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 
 import 'account.dart';
 import 'account_update.dart';
-import 'currency_rates_service.dart';
-import 'transaction_record.dart';
 
 class AccountDatabase {
   AccountDatabase._();
@@ -14,11 +11,9 @@ class AccountDatabase {
   static const String _dbName = 'accounts.db';
   static const int _dbVersion = 3;
   static const String accountsTable = 'accounts';
-  static const String transactionsTable = 'transactions';
   static const String accountUpdatesTable = 'account_updates';
   static const double _epsilon = 0.0001;
 
-  final CurrencyRatesService _ratesService = CurrencyRatesService();
   Database? _database;
 
   Future<Database> get database async {
@@ -44,13 +39,9 @@ class AccountDatabase {
       },
       onCreate: (db, version) async {
         await _createAccountsTable(db);
-        await _createTransactionsTable(db);
         await _createAccountUpdatesTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
-        if (oldVersion < 2) {
-          await _createTransactionsTable(db);
-        }
         if (oldVersion < 3) {
           await _createAccountUpdatesTable(db);
         }
@@ -65,20 +56,6 @@ class AccountDatabase {
         name TEXT NOT NULL,
         balance REAL NOT NULL DEFAULT 0,
         currency TEXT NOT NULL DEFAULT 'EUR'
-      )
-    ''');
-  }
-
-  Future<void> _createTransactionsTable(Database db) async {
-    await db.execute('''
-      CREATE TABLE $transactionsTable(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        amount REAL NOT NULL,
-        currency TEXT NOT NULL,
-        account_id INTEGER NOT NULL,
-        FOREIGN KEY(account_id) REFERENCES $accountsTable(id) ON DELETE CASCADE
       )
     ''');
   }
@@ -170,185 +147,6 @@ class AccountDatabase {
     );
   }
 
-  Future<List<TransactionRecord>> fetchTransactions() async {
-    final db = await database;
-    final rows = await db.query(
-      transactionsTable,
-      orderBy: 'datetime(created_at) DESC, id DESC',
-    );
-    return rows.map(TransactionRecord.fromMap).toList();
-  }
-
-  Future<TransactionRecord> insertTransaction(TransactionRecord record) async {
-    final db = await database;
-    final accountId = record.accountId;
-    final account = await _fetchAccount(db, accountId);
-    final rates = await _safeFetchRates();
-    if (rates != null) {
-      final converted = _convertAmountOrNull(
-        record.amount,
-        record.currency,
-        account.currency,
-        rates,
-      );
-      if (converted == null) {
-        debugPrint(
-          'AccountDatabase: unable to convert ${record.currency} -> '
-          '${account.currency}; skipping account update.',
-        );
-      } else {
-        final newBalance = account.balance + converted;
-        await _updateAccountBalance(db, account, newBalance);
-      }
-    } else {
-      debugPrint(
-        'AccountDatabase: skipping balance adjustment for account '
-        '${account.id} due to missing exchange rates.',
-      );
-    }
-
-    final data = Map<String, Object?>.from(record.toMap())
-      ..remove('id'); // id auto-generates
-    final newId = await db.insert(transactionsTable, data);
-    return record.copyWith(id: newId);
-  }
-
-  Future<TransactionRecord> updateTransaction(TransactionRecord record) async {
-    final db = await database;
-    final id = record.id;
-    if (id == null) {
-      throw ArgumentError('Transaction id cannot be null when updating.');
-    }
-    final existingRows = await db.query(
-      transactionsTable,
-      where: 'id = ?',
-      whereArgs: <Object?>[id],
-      limit: 1,
-    );
-    if (existingRows.isEmpty) {
-      throw ArgumentError('Transaction with id $id does not exist.');
-    }
-    final existing = TransactionRecord.fromMap(existingRows.first);
-    final rates = await _safeFetchRates();
-
-    if (existing.accountId == record.accountId && rates != null) {
-      final account = await _fetchAccount(db, record.accountId);
-      final oldConverted = _convertAmountOrNull(
-        existing.amount,
-        existing.currency,
-        account.currency,
-        rates,
-      );
-      final newConverted = _convertAmountOrNull(
-        record.amount,
-        record.currency,
-        account.currency,
-        rates,
-      );
-      if (oldConverted == null || newConverted == null) {
-        debugPrint(
-          'AccountDatabase: missing rate for transaction update on account '
-          '${account.id}; skipping balance adjustment.',
-        );
-      } else {
-        final delta = newConverted - oldConverted;
-        if (delta.abs() > _epsilon) {
-          final newBalance = account.balance + delta;
-          await _updateAccountBalance(db, account, newBalance);
-        }
-      }
-    } else if (existing.accountId != record.accountId && rates != null) {
-      final oldAccount = await _fetchAccount(db, existing.accountId);
-      final oldConverted = _convertAmountOrNull(
-        existing.amount,
-        existing.currency,
-        oldAccount.currency,
-        rates,
-      );
-      if (oldConverted != null) {
-        final oldNewBalance = oldAccount.balance - oldConverted;
-        await _updateAccountBalance(db, oldAccount, oldNewBalance);
-      } else {
-        debugPrint(
-          'AccountDatabase: missing rate when reverting old transaction '
-          'from account ${oldAccount.id}.',
-        );
-      }
-
-      final newAccount = await _fetchAccount(db, record.accountId);
-      final newConverted = _convertAmountOrNull(
-        record.amount,
-        record.currency,
-        newAccount.currency,
-        rates,
-      );
-      if (newConverted != null) {
-        final newBalance = newAccount.balance + newConverted;
-        await _updateAccountBalance(db, newAccount, newBalance);
-      } else {
-        debugPrint(
-          'AccountDatabase: missing rate when applying transaction to account '
-          '${newAccount.id}.',
-        );
-      }
-    } else if (rates == null) {
-      debugPrint(
-        'AccountDatabase: transaction update executed without exchange rates; '
-        'account balances unchanged.',
-      );
-    }
-
-    await db.update(
-      transactionsTable,
-      record.toMap(),
-      where: 'id = ?',
-      whereArgs: <Object?>[id],
-    );
-    return record;
-  }
-
-  Future<void> deleteTransaction(int id) async {
-    final db = await database;
-    final existingRows = await db.query(
-      transactionsTable,
-      where: 'id = ?',
-      whereArgs: <Object?>[id],
-      limit: 1,
-    );
-    if (existingRows.isNotEmpty) {
-      final existing = TransactionRecord.fromMap(existingRows.first);
-      final rates = await _safeFetchRates();
-      if (rates != null) {
-        final account = await _fetchAccount(db, existing.accountId);
-        final converted = _convertAmountOrNull(
-          existing.amount,
-          existing.currency,
-          account.currency,
-          rates,
-        );
-        if (converted != null) {
-          final newBalance = account.balance - converted;
-          await _updateAccountBalance(db, account, newBalance);
-        } else {
-          debugPrint(
-            'AccountDatabase: missing rate when deleting transaction from '
-            'account ${account.id}.',
-          );
-        }
-      } else {
-        debugPrint(
-          'AccountDatabase: skipping balance rollback for transaction delete '
-          'due to missing exchange rates.',
-        );
-      }
-    }
-    await db.delete(
-      transactionsTable,
-      where: 'id = ?',
-      whereArgs: <Object?>[id],
-    );
-  }
-
   Future<List<AccountUpdate>> fetchAccountUpdates() async {
     final db = await database;
     final rows = await db.query(
@@ -403,15 +201,6 @@ class AccountDatabase {
     );
   }
 
-  Future<Map<String, double>?> _safeFetchRates() async {
-    try {
-      return await _ratesService.fetchRates();
-    } catch (error, stackTrace) {
-      debugPrint('AccountDatabase: failed to fetch rates: $error\n$stackTrace');
-      return null;
-    }
-  }
-
   Future<Account> _fetchAccount(Database db, int accountId) async {
     final rows = await db.query(
       accountsTable,
@@ -448,39 +237,4 @@ class AccountDatabase {
     });
   }
 
-  double? _convertAmountOrNull(
-    double amount,
-    String fromCurrency,
-    String toCurrency,
-    Map<String, double>? rates,
-  ) {
-    if (rates == null) {
-      return null;
-    }
-    final from = fromCurrency.toUpperCase();
-    final to = toCurrency.toUpperCase();
-    if (from == to) {
-      return amount;
-    }
-
-    double amountInEur;
-    if (from == 'EUR') {
-      amountInEur = amount;
-    } else {
-      final fromRate = rates[from];
-      if (fromRate == null || fromRate == 0) {
-        return null;
-      }
-      amountInEur = amount / fromRate;
-    }
-
-    if (to == 'EUR') {
-      return amountInEur;
-    }
-    final toRate = rates[to];
-    if (toRate == null || toRate == 0) {
-      return null;
-    }
-    return amountInEur * toRate;
-  }
 }

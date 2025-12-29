@@ -18,6 +18,5 @@ void setupTestDatabase() {
 Future<void> resetDatabase() async {
   final db = await AccountDatabase.instance.database;
   await db.delete(AccountDatabase.accountUpdatesTable);
-  await db.delete(AccountDatabase.transactionsTable);
   await db.delete(AccountDatabase.accountsTable);
 }
