@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -1061,6 +1062,10 @@ class _StatsTabState extends State<StatsTab> {
     final points = _controller.points;
     final latest = points.last;
     final colorScheme = Theme.of(context).colorScheme;
+    final maxValue = points
+        .map((point) => point.total)
+        .reduce((value, element) => max(value, element));
+    final maxLabel = 'Max: ${maxValue.toStringAsFixed(2)} EUR';
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -1073,11 +1078,36 @@ class _StatsTabState extends State<StatsTab> {
           ),
           const SizedBox(height: 16),
           Expanded(
-            child: _LineChart(
-              points: points,
-              lineColor: colorScheme.primary,
-              fillColor: colorScheme.primary.withOpacity(0.18),
-              axisColor: colorScheme.outlineVariant,
+            child: Stack(
+              children: <Widget>[
+                _LineChart(
+                  points: points,
+                  lineColor: colorScheme.primary,
+                  fillColor: colorScheme.primary.withOpacity(0.18),
+                  axisColor: colorScheme.outlineVariant,
+                ),
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: colorScheme.surface.withOpacity(0.85),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: colorScheme.outlineVariant),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      child: Text(
+                        maxLabel,
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 16),
