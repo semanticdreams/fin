@@ -22,6 +22,10 @@ int suggestPrecision(String currency) {
       return 8;
     case 'ETH':
       return 6;
+    case 'SOL':
+    case 'ARB':
+    case 'XMR':
+      return 6;
     default:
       return 2;
   }
