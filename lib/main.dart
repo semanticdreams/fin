@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:window_manager/window_manager.dart';
@@ -1013,8 +1014,41 @@ class StatsTab extends StatefulWidget {
   State<StatsTab> createState() => _StatsTabState();
 }
 
+enum StatsRange {
+  all,
+  yearly,
+  monthly,
+}
+
+extension StatsRangeLabel on StatsRange {
+  String get label {
+    switch (this) {
+      case StatsRange.all:
+        return 'All';
+      case StatsRange.yearly:
+        return 'Yearly';
+      case StatsRange.monthly:
+        return 'Monthly';
+    }
+  }
+
+  int? get lookbackDays {
+    switch (this) {
+      case StatsRange.all:
+        return null;
+      case StatsRange.yearly:
+        return 365;
+      case StatsRange.monthly:
+        return 30;
+    }
+  }
+}
+
 class _StatsTabState extends State<StatsTab> {
+  static const String _statsRangePreferenceKey = 'stats_range';
+
   late final StatsController _controller;
+  StatsRange _range = StatsRange.all;
 
   @override
   void initState() {
@@ -1022,6 +1056,7 @@ class _StatsTabState extends State<StatsTab> {
     _controller = StatsController(AccountDatabase.instance)
       ..addListener(_handleControllerChange);
     _controller.load();
+    _loadRangePreference();
   }
 
   @override
@@ -1045,6 +1080,29 @@ class _StatsTabState extends State<StatsTab> {
     await _controller.load();
   }
 
+  Future<void> _loadRangePreference() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_statsRangePreferenceKey);
+    if (!mounted) {
+      return;
+    }
+    if (saved == null) {
+      return;
+    }
+    final restored = StatsRange.values.firstWhere(
+      (range) => range.name == saved,
+      orElse: () => StatsRange.all,
+    );
+    setState(() {
+      _range = restored;
+    });
+  }
+
+  Future<void> _persistRangePreference(StatsRange range) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_statsRangePreferenceKey, range.name);
+  }
+
   @override
   Widget build(BuildContext context) {
     return SafeArea(child: _buildBody());
@@ -1059,7 +1117,10 @@ class _StatsTabState extends State<StatsTab> {
       return const Center(child: Text('No balance history yet.'));
     }
 
-    final points = _controller.points;
+    final points = _filterPoints(_controller.points, _range);
+    if (points.isEmpty) {
+      return const Center(child: Text('No balance history for this range.'));
+    }
     final latest = points.last;
     final colorScheme = Theme.of(context).colorScheme;
     final maxValue = points
@@ -1072,9 +1133,34 @@ class _StatsTabState extends State<StatsTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          Text(
-            'Total balance over time',
-            style: Theme.of(context).textTheme.titleMedium,
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: <Widget>[
+              Text(
+                'Total balance over time',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              DropdownButton<StatsRange>(
+                value: _range,
+                items: StatsRange.values
+                    .map(
+                      (range) => DropdownMenuItem<StatsRange>(
+                        value: range,
+                        child: Text(range.label),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value == null || value == _range) {
+                    return;
+                  }
+                  setState(() {
+                    _range = value;
+                  });
+                  _persistRangePreference(value);
+                },
+              ),
+            ],
           ),
           const SizedBox(height: 16),
           Expanded(
@@ -1118,6 +1204,17 @@ class _StatsTabState extends State<StatsTab> {
         ],
       ),
     );
+  }
+
+  List<StatsPoint> _filterPoints(List<StatsPoint> points, StatsRange range) {
+    final lookbackDays = range.lookbackDays;
+    if (lookbackDays == null) {
+      return points;
+    }
+    final cutoff = DateTime.now().subtract(Duration(days: lookbackDays));
+    return points
+        .where((point) => !point.time.isBefore(cutoff))
+        .toList();
   }
 
   String _formatTimestamp(DateTime time) {
