@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -1123,10 +1122,9 @@ class _StatsTabState extends State<StatsTab> {
     }
     final latest = points.last;
     final colorScheme = Theme.of(context).colorScheme;
-    final maxValue = points
-        .map((point) => point.total)
-        .reduce((value, element) => max(value, element));
-    final maxLabel = 'Max: ${maxValue.toStringAsFixed(2)} EUR';
+    final labelStyle = Theme.of(context).textTheme.labelSmall?.copyWith(
+          color: colorScheme.onSurfaceVariant,
+        );
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -1164,36 +1162,13 @@ class _StatsTabState extends State<StatsTab> {
           ),
           const SizedBox(height: 16),
           Expanded(
-            child: Stack(
-              children: <Widget>[
-                _LineChart(
-                  points: points,
-                  lineColor: colorScheme.primary,
-                  fillColor: colorScheme.primary.withOpacity(0.18),
-                  axisColor: colorScheme.outlineVariant,
-                ),
-                Positioned(
-                  top: 8,
-                  right: 8,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: colorScheme.surface.withOpacity(0.85),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: colorScheme.outlineVariant),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      child: Text(
-                        maxLabel,
-                        style: Theme.of(context).textTheme.labelSmall,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+            child: _LineChart(
+              points: points,
+              lineColor: colorScheme.primary,
+              fillColor: colorScheme.primary.withOpacity(0.18),
+              axisColor: colorScheme.outlineVariant,
+              labelStyle: labelStyle,
+              padding: const EdgeInsets.fromLTRB(48, 12, 12, 28),
             ),
           ),
           const SizedBox(height: 16),
@@ -1230,12 +1205,16 @@ class _LineChart extends StatelessWidget {
     required this.lineColor,
     required this.fillColor,
     required this.axisColor,
+    required this.labelStyle,
+    required this.padding,
   });
 
   final List<StatsPoint> points;
   final Color lineColor;
   final Color fillColor;
   final Color axisColor;
+  final TextStyle? labelStyle;
+  final EdgeInsets padding;
 
   @override
   Widget build(BuildContext context) {
@@ -1248,6 +1227,8 @@ class _LineChart extends StatelessWidget {
             lineColor: lineColor,
             fillColor: fillColor,
             axisColor: axisColor,
+            labelStyle: labelStyle,
+            padding: padding,
           ),
         );
       },
@@ -1261,16 +1242,30 @@ class _LineChartPainter extends CustomPainter {
     required this.lineColor,
     required this.fillColor,
     required this.axisColor,
+    required this.labelStyle,
+    required this.padding,
   });
 
   final List<StatsPoint> points;
   final Color lineColor;
   final Color fillColor;
   final Color axisColor;
+  final TextStyle? labelStyle;
+  final EdgeInsets padding;
 
   @override
   void paint(Canvas canvas, Size size) {
     if (points.isEmpty || size.width <= 0 || size.height <= 0) {
+      return;
+    }
+
+    final chartRect = Rect.fromLTWH(
+      padding.left,
+      padding.top,
+      size.width - padding.horizontal,
+      size.height - padding.vertical,
+    );
+    if (chartRect.width <= 0 || chartRect.height <= 0) {
       return;
     }
 
@@ -1325,8 +1320,9 @@ class _LineChartPainter extends CustomPainter {
       } else if (valueRatio > 1) {
         valueRatio = 1;
       }
-      final double dx = position * size.width;
-      final double dy = size.height - valueRatio * size.height;
+      final double dx = chartRect.left + position * chartRect.width;
+      final double dy =
+          chartRect.top + chartRect.height - valueRatio * chartRect.height;
       final offset = Offset(dx, dy);
       offsets.add(offset);
       if (i == 0) {
@@ -1341,15 +1337,28 @@ class _LineChartPainter extends CustomPainter {
       ..strokeWidth = 1
       ..style = PaintingStyle.stroke;
     canvas.drawLine(
-      Offset(0, size.height),
-      Offset(size.width, size.height),
+      Offset(chartRect.left, chartRect.bottom),
+      Offset(chartRect.right, chartRect.bottom),
+      axisPaint,
+    );
+    canvas.drawLine(
+      Offset(chartRect.left, chartRect.top),
+      Offset(chartRect.left, chartRect.bottom),
+      axisPaint,
+    );
+
+    _drawYAxisTicks(
+      canvas,
+      chartRect,
+      minValue,
+      maxValue,
       axisPaint,
     );
 
     if (offsets.length > 1) {
       final fillPath = Path.from(path)
-        ..lineTo(offsets.last.dx, size.height)
-        ..lineTo(offsets.first.dx, size.height)
+        ..lineTo(offsets.last.dx, chartRect.bottom)
+        ..lineTo(offsets.first.dx, chartRect.bottom)
         ..close();
 
       final fillPaint = Paint()
@@ -1376,12 +1385,53 @@ class _LineChartPainter extends CustomPainter {
     }
   }
 
+  void _drawYAxisTicks(
+    Canvas canvas,
+    Rect chartRect,
+    double minValue,
+    double maxValue,
+    Paint axisPaint,
+  ) {
+    const int tickCount = 4;
+    final tickLength = 6.0;
+    final style = labelStyle;
+
+    for (var i = 0; i < tickCount; i++) {
+      final ratio = tickCount == 1 ? 0.0 : i / (tickCount - 1);
+      final value = minValue + (maxValue - minValue) * ratio;
+      final y = chartRect.bottom - ratio * chartRect.height;
+
+      canvas.drawLine(
+        Offset(chartRect.left - tickLength, y),
+        Offset(chartRect.left, y),
+        axisPaint,
+      );
+
+      if (style != null) {
+        final text = value.toStringAsFixed(2);
+        final textPainter = TextPainter(
+          text: TextSpan(text: text, style: style),
+          textDirection: TextDirection.ltr,
+        )..layout(maxWidth: padding.left - tickLength - 4);
+        textPainter.paint(
+          canvas,
+          Offset(
+            chartRect.left - tickLength - 4 - textPainter.width,
+            y - textPainter.height / 2,
+          ),
+        );
+      }
+    }
+  }
+
   @override
   bool shouldRepaint(covariant _LineChartPainter oldDelegate) {
     return oldDelegate.points != points ||
         oldDelegate.lineColor != lineColor ||
         oldDelegate.fillColor != fillColor ||
-        oldDelegate.axisColor != axisColor;
+        oldDelegate.axisColor != axisColor ||
+        oldDelegate.labelStyle != labelStyle ||
+        oldDelegate.padding != padding;
   }
 }
 
